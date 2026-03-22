@@ -10,7 +10,7 @@ from tradehelm.historical.backtest_runner import BacktestRunner
 from tradehelm.historical.cache import HistoricalCache
 from tradehelm.historical.run_analysis import RunAnalysisService
 from tradehelm.persistence.db import BacktestRunRecord, ClosedTradeRecord, PositionRecord, create_session_factory
-from tradehelm.trading_engine.types import Bar
+from tradehelm.trading_engine.types import Bar, StrategyAction
 
 
 def test_backtest_run_created_from_cached_data(tmp_path):
@@ -227,6 +227,15 @@ def test_run_analysis_handles_legacy_decisions_without_action():
     )
     assert artifacts["decision_summary"]["decision_count_by_strategy"]["orb"] == 2
     assert artifacts["decision_summary"]["trade_count_by_strategy"] == {}
+
+
+def test_run_analysis_counts_entry_from_enum_action_value():
+    svc = RunAnalysisService()
+    artifacts = svc.build_run_artifacts(
+        trades=[],
+        decisions=[{"strategy_id": "orb", "accepted": True, "action": StrategyAction.ENTRY, "reason": "enum_action"}],
+    )
+    assert artifacts["decision_summary"]["trade_count_by_strategy"]["orb"] == 1
 
 
 def test_compare_runs_returns_metrics(tmp_path):

@@ -6,6 +6,11 @@ from datetime import datetime
 
 
 class RunAnalysisService:
+    def _normalize_action(self, raw_action: object) -> str:
+        if hasattr(raw_action, "value"):
+            raw_action = getattr(raw_action, "value")
+        return str(raw_action or "UNKNOWN").strip().upper()
+
     def build_equity_curve(self, trades: list[dict]) -> list[dict]:
         ordered = sorted(trades, key=lambda t: (t.get("exit_ts") or "", t.get("id") or 0))
         curve: list[dict] = []
@@ -70,7 +75,7 @@ class RunAnalysisService:
             by_acceptance["accepted" if accepted else "rejected"] += 1
             strategy_id = str(decision.get("strategy_id") or "unknown")
             by_strategy[strategy_id] += 1
-            action = str(decision.get("action") or "UNKNOWN").upper()
+            action = self._normalize_action(decision.get("action"))
             if accepted and action == "ENTRY":
                 accepted_entries_by_strategy[strategy_id] += 1
         return {
