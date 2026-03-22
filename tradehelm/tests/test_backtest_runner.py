@@ -202,18 +202,31 @@ def test_run_analysis_symbol_and_decision_summary_for_multi_symbol():
         {"id": 3, "symbol": "AAPL", "net_pnl": 4.0, "fees": 0.2, "exit_ts": "2026-01-01T14:45:00+00:00"},
     ]
     decisions = [
-        {"strategy_id": "orb", "accepted": True, "reason": "accepted_entry"},
-        {"strategy_id": "orb", "accepted": False, "reason": "risk_rejection"},
-        {"strategy_id": "vwap", "accepted": False, "reason": "risk_rejection"},
+        {"strategy_id": "orb", "accepted": True, "action": "ENTRY", "reason": "accepted_entry"},
+        {"strategy_id": "orb", "accepted": True, "action": "EXIT", "reason": "exit_accepted"},
+        {"strategy_id": "vwap", "accepted": False, "action": "ENTRY", "reason": "risk_rejection"},
     ]
     artifacts = svc.build_run_artifacts(trades, decisions)
     assert artifacts["equity_curve"]
     aapl = [row for row in artifacts["symbol_summary"] if row["symbol"] == "AAPL"][0]
     assert aapl["trades"] == 2
     assert aapl["net_pnl"] == 14.0
-    assert artifacts["decision_summary"]["by_reason"]["risk_rejection"] == 2
+    assert artifacts["decision_summary"]["by_reason"]["risk_rejection"] == 1
     assert artifacts["decision_summary"]["decision_count_by_strategy"]["orb"] == 2
     assert artifacts["decision_summary"]["trade_count_by_strategy"]["orb"] == 1
+
+
+def test_run_analysis_handles_legacy_decisions_without_action():
+    svc = RunAnalysisService()
+    artifacts = svc.build_run_artifacts(
+        trades=[],
+        decisions=[
+            {"strategy_id": "orb", "accepted": True, "reason": "legacy_accepted_without_action"},
+            {"strategy_id": "orb", "accepted": False, "reason": "legacy_rejected_without_action"},
+        ],
+    )
+    assert artifacts["decision_summary"]["decision_count_by_strategy"]["orb"] == 2
+    assert artifacts["decision_summary"]["trade_count_by_strategy"] == {}
 
 
 def test_compare_runs_returns_metrics(tmp_path):

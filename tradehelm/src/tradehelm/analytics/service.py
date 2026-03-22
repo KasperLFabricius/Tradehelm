@@ -111,6 +111,7 @@ class AnalyticsService:
                     "symbol": row.symbol,
                     "side": row.side,
                     "qty": row.qty,
+                    "action": row.action,
                     "accepted": bool(row.accepted),
                     "reason": row.reason,
                     "mode": row.mode,

@@ -37,6 +37,7 @@ class DecisionRecord(Base):
     symbol: Mapped[str] = mapped_column(String(16))
     side: Mapped[str] = mapped_column(String(8))
     qty: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(16), default="UNKNOWN")
     accepted: Mapped[int] = mapped_column(Integer, default=0)
     reason: Mapped[str] = mapped_column(String(255), default="")
     mode: Mapped[str] = mapped_column(String(32), default="PAPER")
@@ -186,6 +187,9 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
             "started_at": "ALTER TABLE replay_sessions ADD COLUMN started_at DATETIME",
             "completed_at": "ALTER TABLE replay_sessions ADD COLUMN completed_at DATETIME",
         },
+        "decisions": {
+            "action": "ALTER TABLE decisions ADD COLUMN action TEXT DEFAULT 'UNKNOWN'",
+        },
         "backtest_runs": {
             "config_json": "ALTER TABLE backtest_runs ADD COLUMN config_json TEXT DEFAULT '{}'",
             "trades_json": "ALTER TABLE backtest_runs ADD COLUMN trades_json TEXT DEFAULT '[]'",
@@ -211,6 +215,7 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
         conn.execute(text("UPDATE closed_trades SET net_pnl = COALESCE(net_pnl, pnl)"))
         conn.execute(text("UPDATE replay_sessions SET loaded_at = COALESCE(loaded_at, started_at, CURRENT_TIMESTAMP)"))
         conn.execute(text("UPDATE replay_sessions SET status = COALESCE(NULLIF(status, ''), 'LOADED')"))
+        conn.execute(text("UPDATE decisions SET action = COALESCE(NULLIF(action, ''), 'UNKNOWN')"))
         conn.execute(text("UPDATE backtest_runs SET config_json = COALESCE(config_json, '{}')"))
         conn.execute(text("UPDATE backtest_runs SET trades_json = COALESCE(trades_json, '[]')"))
         conn.execute(text("UPDATE backtest_runs SET decisions_json = COALESCE(decisions_json, '[]')"))

@@ -92,6 +92,7 @@ def test_decision_record_persists_rejection_reason():
         rows = s.scalars(select(DecisionRecord)).all()
         assert len(rows) == 1
         assert rows[0].accepted == 0
+        assert rows[0].action == "UNKNOWN"
         assert "max_trades_per_day" in rows[0].reason
 
 

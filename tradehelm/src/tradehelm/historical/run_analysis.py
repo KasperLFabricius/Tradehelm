@@ -70,7 +70,8 @@ class RunAnalysisService:
             by_acceptance["accepted" if accepted else "rejected"] += 1
             strategy_id = str(decision.get("strategy_id") or "unknown")
             by_strategy[strategy_id] += 1
-            if accepted:
+            action = str(decision.get("action") or "UNKNOWN").upper()
+            if accepted and action == "ENTRY":
                 accepted_entries_by_strategy[strategy_id] += 1
         return {
             "by_reason": dict(sorted(by_reason.items(), key=lambda item: item[0])),

@@ -68,7 +68,8 @@ class HistoricalCache:
         splits: list[SplitEvent],
         dividends: list[DividendEvent],
     ) -> DatasetRef:
-        key = self.make_cache_key(provider, symbol, interval, start_date, end_date, adjusted)
+        normalized_interval = ensure_supported_interval(interval)
+        key = self.make_cache_key(provider, symbol, normalized_interval, start_date, end_date, adjusted)
         paths = self.dataset_paths(key)
 
         with paths.bars_path.open("w", newline="", encoding="utf-8") as f:
@@ -119,7 +120,7 @@ class HistoricalCache:
                 session.add(row)
             row.provider = provider
             row.symbol = symbol
-            row.interval = interval
+            row.interval = normalized_interval
             row.start_date = start_date.isoformat()
             row.end_date = end_date.isoformat()
             row.adjusted = int(adjusted)
