@@ -25,7 +25,7 @@ pip install -e .[dev]
 python -m tradehelm
 ```
 
-The launcher ensures DB/schema initialization, then starts FastAPI on `http://127.0.0.1:8000`.
+The launcher ensures DB/schema initialization, then starts FastAPI on `http://127.0.0.1:8000`. Existing local SQLite files are upgraded in-place on startup for backward-compatible schema additions.
 
 ## Dashboard startup (second terminal)
 ```powershell

@@ -94,3 +94,11 @@ def test_invalid_config_payload_returns_clean_error(tmp_path):
         response = client.post("/config", json={"config": {"replay_speed": 0}})
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "invalid_payload"
+
+
+def test_analytics_reset_requires_structured_confirmation_error(tmp_path):
+    with _client_for(tmp_path / "reset.db") as client:
+        response = client.post("/analytics/reset", json={"confirm": False})
+        assert response.status_code == 400
+        payload = response.json()
+        assert payload["error"]["code"] == "reset_confirmation_required"

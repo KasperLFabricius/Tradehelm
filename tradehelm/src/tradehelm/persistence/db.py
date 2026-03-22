@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
+from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -118,8 +119,56 @@ class RuntimeMetadataRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+def _sqlite_table_columns(conn, table: str) -> set[str]:
+    rows = conn.execute(text(f"PRAGMA table_info({table})")).all()
+    return {str(row[1]) for row in rows}
+
+
+def _upgrade_sqlite_schema(engine: Engine) -> None:
+    """Idempotent SQLite-only compatibility upgrade for older local DBs."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    required_columns = {
+        "positions": {
+            "opened_at": "ALTER TABLE positions ADD COLUMN opened_at DATETIME",
+            "cumulative_fees": "ALTER TABLE positions ADD COLUMN cumulative_fees REAL DEFAULT 0.0",
+        },
+        "closed_trades": {
+            "side": "ALTER TABLE closed_trades ADD COLUMN side TEXT DEFAULT 'LONG'",
+            "entry_ts": "ALTER TABLE closed_trades ADD COLUMN entry_ts DATETIME",
+            "exit_ts": "ALTER TABLE closed_trades ADD COLUMN exit_ts DATETIME",
+            "gross_pnl": "ALTER TABLE closed_trades ADD COLUMN gross_pnl REAL DEFAULT 0.0",
+            "fees": "ALTER TABLE closed_trades ADD COLUMN fees REAL DEFAULT 0.0",
+            "net_pnl": "ALTER TABLE closed_trades ADD COLUMN net_pnl REAL DEFAULT 0.0",
+        },
+        "replay_sessions": {
+            "loaded_at": "ALTER TABLE replay_sessions ADD COLUMN loaded_at DATETIME",
+            "started_at": "ALTER TABLE replay_sessions ADD COLUMN started_at DATETIME",
+            "completed_at": "ALTER TABLE replay_sessions ADD COLUMN completed_at DATETIME",
+        },
+    }
+
+    with engine.begin() as conn:
+        for table, columns in required_columns.items():
+            existing = _sqlite_table_columns(conn, table)
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(text(ddl))
+
+        # Backfill conservative defaults for rows that pre-date these columns.
+        conn.execute(text("UPDATE positions SET cumulative_fees = COALESCE(cumulative_fees, 0.0)"))
+        conn.execute(text("UPDATE closed_trades SET side = COALESCE(NULLIF(side, ''), 'LONG')"))
+        conn.execute(text("UPDATE closed_trades SET gross_pnl = COALESCE(gross_pnl, pnl)"))
+        conn.execute(text("UPDATE closed_trades SET fees = COALESCE(fees, 0.0)"))
+        conn.execute(text("UPDATE closed_trades SET net_pnl = COALESCE(net_pnl, pnl)"))
+        conn.execute(text("UPDATE replay_sessions SET loaded_at = COALESCE(loaded_at, started_at, CURRENT_TIMESTAMP)"))
+        conn.execute(text("UPDATE replay_sessions SET status = COALESCE(NULLIF(status, ''), 'LOADED')"))
+
+
 def create_session_factory(db_url: str = "sqlite:///tradehelm.db") -> sessionmaker:
     """Create DB schema and return session factory."""
     engine = create_engine(db_url, future=True)
     Base.metadata.create_all(engine)
+    _upgrade_sqlite_schema(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)

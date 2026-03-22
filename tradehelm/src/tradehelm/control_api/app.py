@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
@@ -189,7 +189,8 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
     @app.post("/analytics/reset")
     def analytics_reset(req: ResetRequest) -> dict:
         if not req.confirm:
-            raise HTTPException(status_code=400, detail="Reset requires confirm=true")
+            payload = ApiError(error={"code": "reset_confirmation_required", "message": "Reset requires confirm=true."}).model_dump()
+            return JSONResponse(status_code=400, content=payload)
         return {"cleared": engine.reset_paper_records()}
 
     return app
