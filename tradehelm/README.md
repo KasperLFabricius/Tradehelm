@@ -1,17 +1,21 @@
 # TradeHelm v1
 
-Local-first, broker-agnostic, human-supervised intraday stock trading simulator.
+TradeHelm v1 is a local-first, broker-agnostic, human-supervised intraday trading simulator.
 
-## Features in this first pass
-- Broker-agnostic interfaces (BrokerProvider, MarketDataProvider, Strategy, CostModelProvider, NewsProvider stub, AIScorer stub)
-- Modes: STOPPED, OBSERVE, PAPER, HALTED, KILL_SWITCH
-- FastAPI control API with required endpoints
-- Streamlit live dashboard with command center, strategies, orders/fills, positions, risk, logs
-- Replay market data provider from local CSV
-- Paper broker with market/limit orders, cancellations, partial fills, persistent state, PnL, trade journal
-- Friction model: commission, minimum commission, spread, slippage, tick-size rounding
-- Layered risk checks including net-edge-after-friction rejection
-- SQLite persistence for state transitions, config, orders, fills, positions, closed trades, logs, replay metadata
+## What v1 does today
+- Runs locally with FastAPI + Streamlit + SQLite.
+- Supports bot modes: `STOPPED`, `OBSERVE`, `PAPER`, `HALTED`, `KILL_SWITCH`.
+- Replays local intraday CSV bars in a background worker thread (non-blocking control API).
+- Executes simulated market/limit orders through a paper broker with partial fills.
+- Applies configurable friction (commission/minimum, spread, slippage, tick-size rounding).
+- Persists operational records (orders, fills, positions, closed trades, state transitions, logs, replay sessions).
+- Includes extension interfaces/stubs for future broker/news/AI modules.
+
+## What v1 does NOT do
+- No Saxo or any live broker integration.
+- No paid feeds or premium services.
+- No live market data connectors.
+- No production-grade execution microstructure model.
 
 ## Repository layout
 ```
@@ -48,26 +52,32 @@ uvicorn tradehelm.control_api.app:app --reload --port 8000
 streamlit run src/tradehelm/dashboard/app.py
 ```
 
-## Demo replay flow
-1. Start backend.
-2. Open dashboard.
-3. In Replay section, load `sample_data/demo_intraday.csv`.
-4. Set mode to `PAPER` or `OBSERVE`.
-5. Click **Start replay**.
-6. Watch orders/fills/positions/logs update.
-7. Trigger **Kill Switch** to flatten and cancel working orders.
+## Replay behavior
+1. Load dataset (default: `sample_data/demo_intraday.csv`).
+2. Set mode to `OBSERVE` or `PAPER`.
+3. Start replay (`POST /replay/start` or dashboard button).
+4. Replay runs in a background thread; API stays responsive.
+5. Stop replay with `POST /replay/stop`.
 
-## Architecture summary
-- `trading_engine`: core deterministic logic (state machine, risk engine, paper broker, cost model, replay orchestration)
-- `providers`: stable extension interfaces and replay data provider
-- `strategies`: demo strategies (`NoOpStrategy`, `OpeningRangeBreakoutStrategy`)
-- `control_api`: operator command and monitoring endpoints
-- `dashboard`: local operator UI (Streamlit)
-- `persistence`: SQLite schema and session setup
-- `config`: strongly typed Pydantic config models
+### Mode/control semantics during replay
+- `HALTED`: replay keeps advancing market data and mark-to-market, but no new entries are opened.
+- `STOPPED`: requests replay stop and exits worker loop.
+- `KILL_SWITCH`: requests replay stop, cancels working simulated orders, and flattens simulated positions.
 
-## Notes
-- No Saxo integration in v1.
-- No paid services required.
-- No live third-party data dependency.
-- Design preserves future plugin points for SaxoBrokerProvider, premium news, AI scoring, and calendar modules.
+## Config updates
+`POST /config` applies updates to active components immediately for:
+- replay speed
+- risk checks for subsequent validations
+- cost model for subsequent fills and risk edge estimates
+
+Existing persisted orders/fills/positions are not wiped by config changes.
+
+## Known simulator limitations
+- Partial-fill model is intentionally simple.
+- Limit-order fill assumptions are simplified.
+- Replay pacing uses `sleep` derived from `replay_speed` for deterministic local control, not exchange-accurate timing.
+
+## Future extension points already present
+- `BrokerProvider` (for future SaxoBrokerProvider)
+- `NewsProvider` (stub)
+- `AIScorer` (stub)

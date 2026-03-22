@@ -1,8 +1,8 @@
 """Streamlit operator dashboard for TradeHelm."""
 from __future__ import annotations
 
-import streamlit as st
 import requests
+import streamlit as st
 
 API = st.sidebar.text_input("Control API URL", value="http://127.0.0.1:8000")
 
@@ -19,6 +19,12 @@ def post(path: str, payload: dict | None = None):
 
 state = get("/state")
 st.header("Command Center")
+st.metric("Mode", state.get("mode", "UNKNOWN"))
+st.metric("Replay Running", str(state.get("replay_running", False)))
+st.metric("Replay Stop Requested", str(state.get("replay_stop_requested", False)))
+st.caption(f"Replay Path: {state.get('replay_path')}")
+st.caption(f"Started: {state.get('replay_started_at')}")
+st.caption(f"Completed: {state.get('replay_completed_at')}")
 st.json(state)
 
 mode = st.selectbox("Bot Mode", ["STOPPED", "OBSERVE", "PAPER", "HALTED", "KILL_SWITCH"])
@@ -38,7 +44,6 @@ replay_path = st.text_input("Replay CSV path", value="sample_data/demo_intraday.
 if st.button("Load replay"):
     st.write(post("/replay/load", {"path": replay_path}))
 if st.button("Start replay"):
-    st.write(post("/state/mode", {"mode": "PAPER"}))
     st.write(post("/replay/start"))
 if st.button("Stop replay"):
     st.write(post("/replay/stop"))

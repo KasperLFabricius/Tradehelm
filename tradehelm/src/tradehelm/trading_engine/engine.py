@@ -1,7 +1,11 @@
 """Main trading engine orchestration."""
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import sessionmaker
@@ -33,15 +37,38 @@ class TradingEngine:
         self.market_data = ReplayMarketDataProvider(replay_speed=config.replay_speed)
         self.cost_model = GenericCostModel(config.friction)
         self.risk = RiskEngine(config.risk)
-        self.broker = PaperBroker(session_factory, self.cost_model)
+        self.broker = PaperBroker(session_factory, self.cost_model, on_position_closed=self.risk.on_exit)
         self.strategies = {s.strategy_id: StrategyState(strategy=s, enabled=True) for s in strategies}
+
         self.replay_loaded = False
         self.replay_path: str | None = None
+        self.replay_running = False
+        self.replay_stop_requested = False
+        self.replay_started_at: datetime | None = None
+        self.replay_completed_at: datetime | None = None
+        self._replay_thread: threading.Thread | None = None
+        self._lock = threading.Lock()
 
     def log(self, level: str, event_type: str, message: str) -> None:
         with self.session_factory() as s:
             s.add(EventLog(level=level, event_type=event_type, message=message))
             s.commit()
+
+    def apply_config(self, new_config: AppConfig) -> dict[str, Any]:
+        """Apply runtime config updates to active engine components."""
+        self.config = new_config
+        self.cost_model = GenericCostModel(new_config.friction)
+        previous_risk = self.risk
+        self.risk = RiskEngine(new_config.risk)
+        self.risk.trades_today = previous_risk.trades_today
+        self.risk.cooldown_left = previous_risk.cooldown_left
+        self.market_data.replay_speed = new_config.replay_speed
+        self.broker.cost_model = self.cost_model
+        self.broker.on_position_closed = self.risk.on_exit
+        return {
+            "updated": True,
+            "note": "Replay speed and risk/cost settings apply immediately to new bars and new orders.",
+        }
 
     def set_mode(self, mode: BotMode, reason: str = "") -> BotMode:
         new_mode = self.state_machine.set_mode(mode)
@@ -50,7 +77,10 @@ class TradingEngine:
             s.commit()
         self.log("INFO", "mode", f"mode={new_mode.value}")
         if new_mode == BotMode.KILL_SWITCH:
+            self.replay_stop_requested = True
             self.kill_switch_flatten()
+        if new_mode == BotMode.STOPPED:
+            self.replay_stop_requested = True
         return new_mode
 
     def load_replay(self, csv_path: str) -> None:
@@ -61,21 +91,53 @@ class TradingEngine:
             s.add(ReplaySessionRecord(dataset=csv_path, status="LOADED"))
             s.commit()
 
-    def run_replay(self) -> None:
-        if not self.replay_loaded:
-            raise ValueError("replay not loaded")
+    def start_replay(self) -> dict[str, Any]:
+        """Start replay worker in background thread."""
+        with self._lock:
+            if not self.replay_loaded:
+                raise ValueError("replay not loaded")
+            if self.replay_running:
+                return {"started": False, "reason": "already running"}
+            self.replay_stop_requested = False
+            self.replay_running = True
+            self.replay_started_at = datetime.now(timezone.utc)
+            self.replay_completed_at = None
+            self._replay_thread = threading.Thread(target=self._run_replay_worker, daemon=True)
+            self._replay_thread.start()
+            return {"started": True}
+
+    def stop_replay(self) -> dict[str, Any]:
+        """Request replay worker to stop."""
+        self.replay_stop_requested = True
+        return {"stop_requested": True}
+
+    def _run_replay_worker(self) -> None:
+        try:
+            self._run_replay_loop()
+        finally:
+            self.replay_running = False
+            self.replay_completed_at = datetime.now(timezone.utc)
+
+    def _run_replay_loop(self) -> None:
         for bar in self.market_data.bars():
-            self.risk.on_bar()
-            self.broker.on_bar(bar)
+            if self.replay_stop_requested:
+                break
             mode = self.state_machine.mode
             if mode in {BotMode.STOPPED, BotMode.KILL_SWITCH}:
                 break
+
+            self.risk.on_bar()
+            self.broker.on_bar(bar)
+
             if mode == BotMode.OBSERVE:
                 self._observe_bar(bar)
             elif mode == BotMode.PAPER:
                 self._trade_bar(bar)
             elif mode == BotMode.HALTED:
-                continue
+                pass
+
+            pace = max(0.0, 1.0 / max(self.market_data.replay_speed, 0.1))
+            time.sleep(pace)
 
     def _observe_bar(self, bar) -> None:
         for ss in self.strategies.values():
@@ -113,6 +175,7 @@ class TradingEngine:
                 order.status = "CANCELLED"
             for p in s.scalars(select(PositionRecord)).all():
                 p.qty = 0
+                p.avg_entry = 0.0
             s.commit()
 
     def orders(self) -> list[dict]:
@@ -157,11 +220,18 @@ class TradingEngine:
             total += (p["last_price"] - p["avg_entry"]) * p["qty"]
         return total
 
+    def _dt(self, value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
+
     def state(self) -> dict:
         return {
             "mode": self.state_machine.mode.value,
             "replay_loaded": self.replay_loaded,
+            "replay_running": self.replay_running,
+            "replay_stop_requested": self.replay_stop_requested,
             "replay_path": self.replay_path,
+            "replay_started_at": self._dt(self.replay_started_at),
+            "replay_completed_at": self._dt(self.replay_completed_at),
             "active_strategy_count": len([s for s in self.strategies.values() if s.enabled]),
             "open_positions": len([p for p in self.positions() if p["qty"] != 0]),
             "working_orders": len([o for o in self.orders() if o["status"] in {"NEW", "PARTIALLY_FILLED"}]),

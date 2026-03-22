@@ -102,8 +102,7 @@ def get_config() -> dict:
 
 @app.post("/config")
 def set_config(req: ConfigRequest) -> dict:
-    engine.config = req.config
-    return {"updated": True}
+    return engine.apply_config(req.config)
 
 
 @app.post("/replay/load")
@@ -114,11 +113,10 @@ def replay_load(req: ReplayLoadRequest) -> dict:
 
 @app.post("/replay/start")
 def replay_start() -> dict:
-    engine.run_replay()
-    return {"started": True}
+    return engine.start_replay()
 
 
 @app.post("/replay/stop")
 def replay_stop() -> dict:
     engine.set_mode(BotMode.STOPPED, reason="replay_stop")
-    return {"stopped": True}
+    return engine.stop_replay()

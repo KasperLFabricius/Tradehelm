@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from tradehelm.config.models import FrictionConfig
 from tradehelm.providers.interfaces import CostModelProvider
+from tradehelm.trading_engine.types import OrderSide
 
 
 class GenericCostModel(CostModelProvider):
@@ -30,3 +31,10 @@ class GenericCostModel(CostModelProvider):
     def estimate_round_trip_cost(self, price: float, qty: int) -> float:
         """Estimate full open+close cost for expected value checks."""
         return 2 * self.estimate_one_way_cost(price, qty)
+
+    def adjusted_fill_price(self, reference_price: float, side: OrderSide) -> float:
+        """Apply directional spread/slippage impact to execution price."""
+        impact_bps = (self.config.assumed_spread_bps / 2.0) + self.config.assumed_slippage_bps
+        multiplier = 1 + (impact_bps / 10000)
+        raw = reference_price * multiplier if side == OrderSide.BUY else reference_price / multiplier
+        return self.round_price(raw)
