@@ -154,8 +154,36 @@ class BacktestRunRecord(Base):
     equity_curve_json: Mapped[str] = mapped_column(Text, default="[]")
     symbol_summary_json: Mapped[str] = mapped_column(Text, default="[]")
     decision_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    strategy_summary_json: Mapped[str] = mapped_column(Text, default="[]")
+    trade_timeline_json: Mapped[str] = mapped_column(Text, default="[]")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BacktestJobRecord(Base):
+    __tablename__ = "backtest_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(24), default="QUEUED")
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_json: Mapped[str] = mapped_column(Text, default="{}")
+    snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BacktestEventRecord(Base):
+    __tablename__ = "backtest_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    message: Mapped[str] = mapped_column(String(500))
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -197,6 +225,22 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
             "equity_curve_json": "ALTER TABLE backtest_runs ADD COLUMN equity_curve_json TEXT DEFAULT '[]'",
             "symbol_summary_json": "ALTER TABLE backtest_runs ADD COLUMN symbol_summary_json TEXT DEFAULT '[]'",
             "decision_summary_json": "ALTER TABLE backtest_runs ADD COLUMN decision_summary_json TEXT DEFAULT '{}'",
+            "strategy_summary_json": "ALTER TABLE backtest_runs ADD COLUMN strategy_summary_json TEXT DEFAULT '[]'",
+            "trade_timeline_json": "ALTER TABLE backtest_runs ADD COLUMN trade_timeline_json TEXT DEFAULT '[]'",
+        },
+        "backtest_jobs": {
+            "run_id": "ALTER TABLE backtest_jobs ADD COLUMN run_id INTEGER",
+            "request_json": "ALTER TABLE backtest_jobs ADD COLUMN request_json TEXT DEFAULT '{}'",
+            "snapshot_json": "ALTER TABLE backtest_jobs ADD COLUMN snapshot_json TEXT DEFAULT '{}'",
+            "progress_json": "ALTER TABLE backtest_jobs ADD COLUMN progress_json TEXT DEFAULT '{}'",
+            "error_message": "ALTER TABLE backtest_jobs ADD COLUMN error_message TEXT",
+            "cancel_requested": "ALTER TABLE backtest_jobs ADD COLUMN cancel_requested INTEGER DEFAULT 0",
+            "started_at": "ALTER TABLE backtest_jobs ADD COLUMN started_at DATETIME",
+            "completed_at": "ALTER TABLE backtest_jobs ADD COLUMN completed_at DATETIME",
+        },
+        "backtest_events": {
+            "run_id": "ALTER TABLE backtest_events ADD COLUMN run_id INTEGER",
+            "payload_json": "ALTER TABLE backtest_events ADD COLUMN payload_json TEXT DEFAULT '{}'",
         },
     }
 
@@ -222,6 +266,8 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
         conn.execute(text("UPDATE backtest_runs SET equity_curve_json = COALESCE(equity_curve_json, '[]')"))
         conn.execute(text("UPDATE backtest_runs SET symbol_summary_json = COALESCE(symbol_summary_json, '[]')"))
         conn.execute(text("UPDATE backtest_runs SET decision_summary_json = COALESCE(decision_summary_json, '{}')"))
+        conn.execute(text("UPDATE backtest_runs SET strategy_summary_json = COALESCE(strategy_summary_json, '[]')"))
+        conn.execute(text("UPDATE backtest_runs SET trade_timeline_json = COALESCE(trade_timeline_json, '[]')"))
 
 
 def create_session_factory(db_url: str = "sqlite:///tradehelm.db") -> sessionmaker:
