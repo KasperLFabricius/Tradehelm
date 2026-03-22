@@ -9,30 +9,8 @@ TradeHelm v1 is a local-first, broker-agnostic, human-supervised intraday tradin
 - Executes simulated market/limit orders through a paper broker with partial fills.
 - Applies configurable friction with explicit commission fees and implicit spread/slippage price impact (plus tick-size rounding).
 - Persists operational records (orders, fills, positions, closed trades, state transitions, logs, replay sessions).
+- Persists active runtime config and safe runtime metadata (replay path/mode/speed) across restarts.
 - Includes extension interfaces/stubs for future broker/news/AI modules.
-
-## What v1 does NOT do
-- No Saxo or any live broker integration.
-- No paid feeds or premium services.
-- No live market data connectors.
-- No production-grade execution microstructure model.
-
-## Repository layout
-```
-tradehelm/
-  sample_data/
-  src/tradehelm/
-    control_api/
-    dashboard/
-    trading_engine/
-    infrastructure/
-    providers/
-    strategies/
-    risk/
-    persistence/
-    config/
-  tests/
-```
 
 ## Setup (Windows PowerShell)
 ```powershell
@@ -42,12 +20,14 @@ python -m venv .venv
 pip install -e .[dev]
 ```
 
-## Run backend
+## Single-command backend startup
 ```powershell
-uvicorn tradehelm.control_api.app:app --reload --port 8000
+python -m tradehelm
 ```
 
-## Run dashboard
+The launcher ensures DB/schema initialization, then starts FastAPI on `http://127.0.0.1:8000`.
+
+## Dashboard startup (second terminal)
 ```powershell
 streamlit run src/tradehelm/dashboard/app.py
 ```
@@ -64,26 +44,19 @@ streamlit run src/tradehelm/dashboard/app.py
 - `STOPPED`: requests replay stop and exits worker loop.
 - `KILL_SWITCH`: requests replay stop, cancels working simulated orders, and flattens simulated positions.
 
-## Config updates
-`POST /config` applies updates to active components immediately for:
-- replay speed
-- risk checks for subsequent validations
-- cost model for subsequent fills and risk edge estimates
+## API highlights
+- `/health` includes readiness snapshot (DB, replay, mode, config loaded).
+- `/config` returns/updates persisted runtime config.
+- Structured error JSON is returned for common operator errors (`invalid_replay_path`, `strategy_not_found`, `replay_not_loaded`, etc.).
 
-Existing persisted orders/fills/positions are not wiped by config changes.
+## CI
+GitHub Actions workflow at `.github/workflows/ci.yml` runs:
+- dependency install
+- API import smoke check
+- `pytest -q`
 
-
-### Friction accounting model
-- Commission is charged as explicit `fee` on fills.
-- Spread/slippage are modeled as implicit execution-price impact via adjusted fill prices.
-- Trade-evaluation round-trip estimates include both explicit commission and implicit impact.
-
-## Known simulator limitations
-- Partial-fill model is intentionally simple.
-- Limit-order fill assumptions are simplified.
-- Replay pacing uses `sleep` derived from `replay_speed` for deterministic local control, not exchange-accurate timing.
-
-## Future extension points already present
-- `BrokerProvider` (for future SaxoBrokerProvider)
-- `NewsProvider` (stub)
-- `AIScorer` (stub)
+## Out of scope for v1
+- No Saxo or any live broker integration.
+- No paid feeds or premium services.
+- No live market data connectors.
+- No production-grade execution microstructure model.

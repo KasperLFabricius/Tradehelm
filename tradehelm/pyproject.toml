@@ -18,6 +18,10 @@ dependencies = [
   "requests>=2.32",
 ]
 
+
+[project.scripts]
+tradehelm-dev = "tradehelm.__main__:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.3"]
 

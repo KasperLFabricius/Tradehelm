@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -12,10 +13,12 @@ from sqlalchemy.orm import sessionmaker
 
 from tradehelm.config.models import AppConfig
 from tradehelm.persistence.db import EventLog, FillRecord, OrderRecord, PositionRecord, ReplaySessionRecord, StateTransition
+from tradehelm.persistence.state_store import PersistedStateStore, RuntimeMetadata
 from tradehelm.providers.interfaces import Strategy
 from tradehelm.providers.replay import ReplayMarketDataProvider
 from tradehelm.risk.engine import RiskEngine
 from tradehelm.trading_engine.cost_model import GenericCostModel
+from tradehelm.trading_engine.errors import InvalidReplayPathError, InvalidTransitionError, ReplayNotLoadedError, StrategyNotFoundError
 from tradehelm.trading_engine.paper_broker import PaperBroker
 from tradehelm.trading_engine.state_machine import BotStateMachine
 from tradehelm.trading_engine.types import BotMode, OrderType
@@ -30,8 +33,15 @@ class StrategyState:
 class TradingEngine:
     """Coordinates mode, replay, strategy, risk and paper execution."""
 
-    def __init__(self, session_factory: sessionmaker, config: AppConfig, strategies: list[Strategy]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker,
+        config: AppConfig,
+        strategies: list[Strategy],
+        state_store: PersistedStateStore | None = None,
+    ) -> None:
         self.session_factory = session_factory
+        self.state_store = state_store
         self.config = config
         self.state_machine = BotStateMachine()
         self.market_data = ReplayMarketDataProvider(replay_speed=config.replay_speed)
@@ -56,6 +66,46 @@ class TradingEngine:
         self._replay_thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
+    def startup(self) -> None:
+        if self.state_store is None:
+            return
+        persisted_config = self.state_store.load_or_init_config(self.config)
+        self.apply_config(persisted_config, persist=False)
+
+        metadata = RuntimeMetadata.model_validate(self.state_store.load_metadata() or {})
+        if metadata.replay_speed is not None:
+            self.config.replay_speed = metadata.replay_speed
+            self.market_data.replay_speed = metadata.replay_speed
+        if metadata.replay_path:
+            replay_path = metadata.resolved_replay_path()
+            if replay_path and Path(replay_path).exists():
+                try:
+                    self.load_replay(replay_path)
+                except InvalidReplayPathError:
+                    self.log("WARN", "startup", f"Failed to restore replay path: {replay_path}")
+        self.replay_running = False
+        self.replay_stop_requested = False
+        self.set_mode(BotMode.STOPPED, reason="startup_safe_default")
+
+    def shutdown(self) -> None:
+        if self.replay_running:
+            self.replay_stop_requested = True
+            if self._replay_thread is not None:
+                self._replay_thread.join(timeout=2)
+        self.replay_running = False
+        self.replay_stop_requested = True
+        self.set_mode(BotMode.STOPPED, reason="shutdown")
+
+    def _persist_runtime_metadata(self) -> None:
+        if self.state_store is None:
+            return
+        metadata = RuntimeMetadata.from_engine_state(
+            replay_path=self.replay_path,
+            replay_speed=self.config.replay_speed,
+            last_mode=self.state_machine.mode,
+        )
+        self.state_store.save_metadata(metadata.model_dump())
+
     def _on_realized_delta(self, delta: float) -> None:
         self.day_realized_pnl += delta
 
@@ -74,7 +124,7 @@ class TradingEngine:
             s.add(EventLog(level=level, event_type=event_type, message=message))
             s.commit()
 
-    def apply_config(self, new_config: AppConfig) -> dict[str, Any]:
+    def apply_config(self, new_config: AppConfig, persist: bool = True) -> dict[str, Any]:
         """Apply runtime config updates to active engine components."""
         self.config = new_config
         self.cost_model = GenericCostModel(new_config.friction)
@@ -85,13 +135,19 @@ class TradingEngine:
         self.market_data.replay_speed = new_config.replay_speed
         self.broker.cost_model = self.cost_model
         self.broker.on_position_closed = self.risk.on_exit
+        if persist and self.state_store is not None:
+            self.state_store.save_config(new_config)
+            self._persist_runtime_metadata()
         return {
             "updated": True,
             "note": "Replay speed and risk/cost settings apply immediately to new bars and new orders.",
         }
 
     def set_mode(self, mode: BotMode, reason: str = "") -> BotMode:
-        new_mode = self.state_machine.set_mode(mode)
+        try:
+            new_mode = self.state_machine.set_mode(mode)
+        except ValueError as exc:
+            raise InvalidTransitionError(str(exc)) from exc
         with self.session_factory() as s:
             s.add(StateTransition(mode=new_mode.value, reason=reason))
             s.commit()
@@ -101,22 +157,30 @@ class TradingEngine:
             self.kill_switch_flatten()
         if new_mode == BotMode.STOPPED:
             self.replay_stop_requested = True
+        self._persist_runtime_metadata()
         return new_mode
 
     def load_replay(self, csv_path: str) -> None:
-        self.market_data.load(csv_path)
+        path = Path(csv_path).expanduser().resolve()
+        if not path.exists() or not path.is_file() or path.suffix.lower() != ".csv":
+            raise InvalidReplayPathError(f"Replay file is invalid or missing: {csv_path}")
+        try:
+            self.market_data.load(str(path))
+        except Exception as exc:
+            raise InvalidReplayPathError(f"Unable to read replay CSV: {csv_path}") from exc
         self.replay_loaded = True
-        self.replay_path = csv_path
+        self.replay_path = str(path)
         self._reset_day_counters(None)
+        self._persist_runtime_metadata()
         with self.session_factory() as s:
-            s.add(ReplaySessionRecord(dataset=csv_path, status="LOADED"))
+            s.add(ReplaySessionRecord(dataset=str(path), status="LOADED"))
             s.commit()
 
     def start_replay(self) -> dict[str, Any]:
         """Start replay worker in background thread."""
         with self._lock:
             if not self.replay_loaded:
-                raise ValueError("replay not loaded")
+                raise ReplayNotLoadedError("Replay dataset must be loaded before start.")
             if self.replay_running:
                 return {"started": False, "reason": "already running"}
             self.replay_stop_requested = False
@@ -131,6 +195,14 @@ class TradingEngine:
         """Request replay worker to stop."""
         self.replay_stop_requested = True
         return {"stop_requested": True}
+
+    def set_strategy_enabled(self, strategy_id: str, enabled: bool) -> dict[str, Any]:
+        strategy = self.strategies.get(strategy_id)
+        if strategy is None:
+            raise StrategyNotFoundError(f"Strategy not found: {strategy_id}")
+        strategy.enabled = enabled
+        self.log("INFO", "strategy", f"strategy={strategy_id} enabled={enabled}")
+        return {"strategy_id": strategy_id, "enabled": enabled}
 
     def _run_replay_worker(self) -> None:
         try:
@@ -232,6 +304,7 @@ class TradingEngine:
     def trades(self) -> list[dict]:
         with self.session_factory() as s:
             from tradehelm.persistence.db import ClosedTradeRecord
+
             return [t.__dict__ for t in s.scalars(select(ClosedTradeRecord)).all()]
 
     def logs(self) -> list[dict]:
