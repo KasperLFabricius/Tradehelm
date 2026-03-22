@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -37,7 +37,14 @@ class TradingEngine:
         self.market_data = ReplayMarketDataProvider(replay_speed=config.replay_speed)
         self.cost_model = GenericCostModel(config.friction)
         self.risk = RiskEngine(config.risk)
-        self.broker = PaperBroker(session_factory, self.cost_model, on_position_closed=self.risk.on_exit)
+        self.day_realized_pnl = 0.0
+        self.current_trading_day: date | None = None
+        self.broker = PaperBroker(
+            session_factory,
+            self.cost_model,
+            on_position_closed=self.risk.on_exit,
+            on_realized_pnl=self._on_realized_delta,
+        )
         self.strategies = {s.strategy_id: StrategyState(strategy=s, enabled=True) for s in strategies}
 
         self.replay_loaded = False
@@ -48,6 +55,19 @@ class TradingEngine:
         self.replay_completed_at: datetime | None = None
         self._replay_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+
+    def _on_realized_delta(self, delta: float) -> None:
+        self.day_realized_pnl += delta
+
+    def _reset_day_counters(self, trading_day: date | None) -> None:
+        self.current_trading_day = trading_day
+        self.day_realized_pnl = 0.0
+        self.risk.trades_today = 0
+
+    def _roll_day_if_needed(self, bar_ts: datetime) -> None:
+        bar_day = bar_ts.date()
+        if self.current_trading_day != bar_day:
+            self._reset_day_counters(bar_day)
 
     def log(self, level: str, event_type: str, message: str) -> None:
         with self.session_factory() as s:
@@ -87,6 +107,7 @@ class TradingEngine:
         self.market_data.load(csv_path)
         self.replay_loaded = True
         self.replay_path = csv_path
+        self._reset_day_counters(None)
         with self.session_factory() as s:
             s.add(ReplaySessionRecord(dataset=csv_path, status="LOADED"))
             s.commit()
@@ -126,6 +147,7 @@ class TradingEngine:
             if mode in {BotMode.STOPPED, BotMode.KILL_SWITCH}:
                 break
 
+            self._roll_day_if_needed(bar.ts)
             self.risk.on_bar()
             self.broker.on_bar(bar)
 
@@ -133,8 +155,6 @@ class TradingEngine:
                 self._observe_bar(bar)
             elif mode == BotMode.PAPER:
                 self._trade_bar(bar)
-            elif mode == BotMode.HALTED:
-                pass
 
             pace = max(0.0, 1.0 / max(self.market_data.replay_speed, 0.1))
             time.sleep(pace)
@@ -147,36 +167,45 @@ class TradingEngine:
                     self.log("INFO", "observe_signal", f"{ss.strategy.strategy_id} intents={len(intents)}")
 
     def _trade_bar(self, bar) -> None:
-        daily_pnl = self.realized_pnl() + self.unrealized_pnl()
-        current_positions = len([p for p in self.positions() if p["qty"] != 0])
+        day_unrealized_pnl = self.unrealized_pnl()
+        daily_pnl = self.day_realized_pnl + day_unrealized_pnl
+        projected_open_symbols = {p["symbol"] for p in self.positions() if p["qty"] != 0}
+
         for ss in self.strategies.values():
             if not ss.enabled:
                 continue
             for intent in ss.strategy.on_bar(bar):
+                symbol = intent["symbol"]
                 qty = int(intent["qty"])
                 est_cost = self.cost_model.estimate_round_trip_cost(bar.close, qty)
                 gross_edge = float(bar.close * qty * 0.002)
                 net_edge = gross_edge - est_cost
-                ok, reason = self.risk.validate(bar.symbol, qty, bar.close, net_edge, daily_pnl, current_positions)
+                opening_new_symbol = symbol not in projected_open_symbols
+                ok, reason = self.risk.validate(symbol, qty, bar.close, net_edge, daily_pnl, len(projected_open_symbols))
                 if not ok:
                     self.log("WARN", "risk_reject", reason)
                     continue
                 self.broker.submit_order(
-                    symbol=intent["symbol"],
+                    symbol=symbol,
                     side=intent["side"],
                     qty=qty,
                     order_type=OrderType.MARKET,
                 )
                 self.risk.trades_today += 1
+                if opening_new_symbol:
+                    projected_open_symbols.add(symbol)
 
     def kill_switch_flatten(self) -> None:
+        now = datetime.now(timezone.utc)
         with self.session_factory() as s:
             for order in s.scalars(select(OrderRecord).where(OrderRecord.status.in_(["NEW", "PARTIALLY_FILLED"]))).all():
                 order.status = "CANCELLED"
-            for p in s.scalars(select(PositionRecord)).all():
-                p.qty = 0
-                p.avg_entry = 0.0
+            open_symbols = [p.symbol for p in s.scalars(select(PositionRecord).where(PositionRecord.qty != 0)).all()]
+            latest_prices = {sym: self.broker.last_prices.get(sym) for sym in open_symbols}
             s.commit()
+
+        for symbol in open_symbols:
+            self.broker.force_flatten_symbol(symbol, now, latest_prices.get(symbol))
 
     def orders(self) -> list[dict]:
         with self.session_factory() as s:
@@ -236,6 +265,8 @@ class TradingEngine:
             "open_positions": len([p for p in self.positions() if p["qty"] != 0]),
             "working_orders": len([o for o in self.orders() if o["status"] in {"NEW", "PARTIALLY_FILLED"}]),
             "realized_pnl": self.realized_pnl(),
+            "day_realized_pnl": self.day_realized_pnl,
             "unrealized_pnl": self.unrealized_pnl(),
             "daily_loss_limit": self.config.risk.max_daily_loss,
+            "current_trading_day": self.current_trading_day.isoformat() if self.current_trading_day else None,
         }

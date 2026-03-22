@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -21,11 +22,13 @@ class PaperBroker(BrokerProvider):
         session_factory: sessionmaker,
         cost_model: GenericCostModel,
         on_position_closed: Callable[[str], None] | None = None,
+        on_realized_pnl: Callable[[float], None] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.cost_model = cost_model
         self.last_prices: dict[str, float] = {}
         self.on_position_closed = on_position_closed
+        self.on_realized_pnl = on_realized_pnl
 
     def submit_order(self, symbol: str, side: OrderSide, qty: int, order_type: OrderType, limit_price: float | None = None) -> str:
         order_id = str(uuid4())
@@ -62,7 +65,6 @@ class PaperBroker(BrokerProvider):
         side = OrderSide(order.side)
         if order.order_type == OrderType.MARKET.value:
             return self.cost_model.adjusted_fill_price(bar.close, side)
-        # once fillable for a limit, assume execution near better of limit and traded bar close
         ref = min(order.limit_price or bar.close, bar.close) if side == OrderSide.BUY else max(order.limit_price or bar.close, bar.close)
         return self.cost_model.round_price(ref)
 
@@ -86,10 +88,29 @@ class PaperBroker(BrokerProvider):
                 fill_qty = max(1, remaining // 2) if remaining > 1 else remaining
                 fill_px = self._fill_price(order, bar)
                 fee = self.cost_model.estimate_one_way_cost(fill_px, fill_qty)
-                s.add(FillRecord(order_id=order.id, symbol=order.symbol, side=order.side, qty=fill_qty, price=fill_px, fee=fee))
+                s.add(FillRecord(order_id=order.id, symbol=order.symbol, side=order.side, qty=fill_qty, price=fill_px, fee=fee, ts=bar.ts))
                 order.filled_qty += fill_qty
                 order.status = OrderStatus.FILLED.value if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED.value
                 self._apply_fill(s, order.symbol, OrderSide(order.side), fill_qty, fill_px, fee)
+            s.commit()
+
+    def force_flatten_symbol(self, symbol: str, ts: datetime, reference_price: float | None = None) -> None:
+        """Force-close one open position and persist audit records."""
+        with self.session_factory() as s:
+            position = s.get(PositionRecord, symbol)
+            if position is None or position.qty == 0:
+                return
+            qty = abs(position.qty)
+            side = OrderSide.SELL if position.qty > 0 else OrderSide.BUY
+            ref_px = reference_price if reference_price is not None else position.last_price
+            fill_px = self.cost_model.adjusted_fill_price(ref_px, side)
+            fee = self.cost_model.estimate_one_way_cost(fill_px, qty)
+            synthetic_id = f"kill-{uuid4()}"
+            s.add(FillRecord(order_id=synthetic_id, symbol=symbol, side=side.value, qty=qty, price=fill_px, fee=fee, ts=ts))
+            self._apply_fill(s, symbol, side, qty, fill_px, fee)
+            position = s.get(PositionRecord, symbol)
+            if position is not None:
+                position.last_price = fill_px
             s.commit()
 
     def _apply_fill(self, s: Session, symbol: str, side: OrderSide, qty: int, px: float, fee: float) -> None:
@@ -104,22 +125,25 @@ class PaperBroker(BrokerProvider):
         new_qty = old_qty + signed_qty
         position.last_price = px
 
-        # 1) adding to same-direction (or opening from flat)
         if old_qty == 0 or (old_qty > 0 and signed_qty > 0) or (old_qty < 0 and signed_qty < 0):
             total_notional = abs(old_qty) * position.avg_entry + qty * px
             position.qty = new_qty
             position.avg_entry = total_notional / abs(new_qty)
-            position.realized_pnl -= fee
+            delta = -fee
+            position.realized_pnl += delta
+            if self.on_realized_pnl:
+                self.on_realized_pnl(delta)
             return
 
-        # opposite direction fill: reduce, flatten, or reverse
         close_qty = min(abs(old_qty), qty)
         pnl_per_share = (px - position.avg_entry) if old_qty > 0 else (position.avg_entry - px)
-        realized = (close_qty * pnl_per_share) - fee
-        position.realized_pnl += realized
+        delta = (close_qty * pnl_per_share) - fee
+        position.realized_pnl += delta
+        if self.on_realized_pnl:
+            self.on_realized_pnl(delta)
 
         if new_qty == 0:
-            s.add(ClosedTradeRecord(symbol=symbol, entry_price=position.avg_entry, exit_price=px, qty=close_qty, pnl=realized))
+            s.add(ClosedTradeRecord(symbol=symbol, entry_price=position.avg_entry, exit_price=px, qty=close_qty, pnl=delta))
             position.qty = 0
             position.avg_entry = 0.0
             if self.on_position_closed:
@@ -127,16 +151,11 @@ class PaperBroker(BrokerProvider):
             return
 
         if (old_qty > 0 > new_qty) or (old_qty < 0 < new_qty):
-            # 3) reversal residual opens fresh opposite-direction position at execution price
-            residual_qty = abs(new_qty)
-            s.add(ClosedTradeRecord(symbol=symbol, entry_price=position.avg_entry, exit_price=px, qty=abs(old_qty), pnl=realized))
+            s.add(ClosedTradeRecord(symbol=symbol, entry_price=position.avg_entry, exit_price=px, qty=abs(old_qty), pnl=delta))
             position.qty = new_qty
             position.avg_entry = px
             if self.on_position_closed:
                 self.on_position_closed(symbol)
-            # residual opened at px; no additional fee allocation beyond already charged one-way
-            _ = residual_qty
             return
 
-        # 2) reduced but still same original direction
         position.qty = new_qty

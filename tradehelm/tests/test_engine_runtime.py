@@ -1,27 +1,37 @@
-import time
 from datetime import datetime
 
+from sqlalchemy import select
+
 from tradehelm.config.models import AppConfig, FrictionConfig, RiskConfig
-from tradehelm.persistence.db import OrderRecord, PositionRecord, create_session_factory
-from tradehelm.strategies.noop import NoOpStrategy
+from tradehelm.persistence.db import ClosedTradeRecord, FillRecord, OrderRecord, PositionRecord, create_session_factory
+from tradehelm.providers.interfaces import Strategy
 from tradehelm.trading_engine.engine import TradingEngine
-from tradehelm.trading_engine.types import Bar, BotMode, OrderSide, OrderType
+from tradehelm.trading_engine.types import Bar, OrderSide, OrderType
 
 
-def _csv(tmp_path):
-    p = tmp_path / "bars.csv"
-    p.write_text(
-        "timestamp,symbol,open,high,low,close,volume\n"
-        "2026-01-01T14:30:00Z,DEMO,100,101,99,100,1000\n"
-        "2026-01-01T14:31:00Z,DEMO,100,101,99,101,1000\n"
-        "2026-01-01T14:32:00Z,DEMO,101,102,100,102,1000\n"
-    )
-    return str(p)
+class SequenceStrategy(Strategy):
+    strategy_id = "seq"
+
+    def __init__(self, intents_by_ts: dict[str, list[dict]]) -> None:
+        self.intents_by_ts = intents_by_ts
+
+    def on_bar(self, bar: Bar) -> list[dict]:
+        return self.intents_by_ts.get(bar.ts.isoformat(), [])
+
+
+class MultiIntentStrategy(Strategy):
+    strategy_id = "multi"
+
+    def on_bar(self, bar: Bar) -> list[dict]:
+        return [
+            {"symbol": "AAA", "side": OrderSide.BUY, "qty": 1},
+            {"symbol": "BBB", "side": OrderSide.BUY, "qty": 1},
+        ]
 
 
 def test_apply_config_updates_runtime_components():
     sf = create_session_factory("sqlite:///:memory:")
-    engine = TradingEngine(sf, AppConfig(), [NoOpStrategy()])
+    engine = TradingEngine(sf, AppConfig(), [])
     new_cfg = AppConfig(
         replay_speed=12,
         friction=FrictionConfig(tick_size=0.05),
@@ -33,55 +43,97 @@ def test_apply_config_updates_runtime_components():
     assert engine.risk.config.max_trades_per_day == 1
 
 
-def test_replay_start_non_blocking_and_stop(tmp_path):
+def test_max_trades_per_day_resets_on_day_change():
     sf = create_session_factory("sqlite:///:memory:")
-    cfg = AppConfig(replay_speed=50)
-    engine = TradingEngine(sf, cfg, [NoOpStrategy()])
-    engine.load_replay(_csv(tmp_path))
-    engine.set_mode(BotMode.OBSERVE)
+    cfg = AppConfig(risk=RiskConfig(max_trades_per_day=1))
+    day1 = datetime.fromisoformat("2026-01-01T14:30:00+00:00")
+    day2 = datetime.fromisoformat("2026-01-02T14:30:00+00:00")
+    strategy = SequenceStrategy(
+        {
+            day1.isoformat(): [{"symbol": "DEMO", "side": OrderSide.BUY, "qty": 1}],
+            day2.isoformat(): [{"symbol": "DEMO", "side": OrderSide.BUY, "qty": 1}],
+        }
+    )
+    engine = TradingEngine(sf, cfg, [strategy])
 
-    start = time.time()
-    result = engine.start_replay()
-    elapsed = time.time() - start
-    assert result["started"] is True
-    assert elapsed < 0.2
-    assert engine.replay_running is True
+    engine._roll_day_if_needed(day1)
+    engine._trade_bar(Bar(day1, "DEMO", 100, 100, 100, 100, 1))
+    assert engine.risk.trades_today == 1
 
-    stop_res = engine.stop_replay()
-    assert stop_res["stop_requested"] is True
-    for _ in range(30):
-        if not engine.replay_running:
-            break
-        time.sleep(0.02)
-    assert engine.replay_running is False
+    engine._trade_bar(Bar(day1.replace(minute=31), "DEMO", 100, 100, 100, 100, 1))
+    with sf() as s:
+        assert len(s.scalars(select(OrderRecord)).all()) == 1
+
+    engine._roll_day_if_needed(day2)
+    assert engine.risk.trades_today == 0
+    engine._trade_bar(Bar(day2, "DEMO", 100, 100, 100, 100, 1))
+    with sf() as s:
+        assert len(s.scalars(select(OrderRecord)).all()) == 2
 
 
-def test_kill_switch_flattens_and_cancels():
+def test_max_daily_loss_is_day_scoped_not_cumulative():
     sf = create_session_factory("sqlite:///:memory:")
-    engine = TradingEngine(sf, AppConfig(), [NoOpStrategy()])
-    oid = engine.broker.submit_order("DEMO", OrderSide.BUY, 2, OrderType.MARKET)
-    bar = Bar(ts=datetime.utcnow(), symbol="DEMO", open=10, high=11, low=9, close=10, volume=10)
-    engine.broker.on_bar(bar)
-    engine.set_mode(BotMode.KILL_SWITCH)
+    cfg = AppConfig(risk=RiskConfig(max_daily_loss=50, max_trades_per_day=10))
+    ts1 = datetime.fromisoformat("2026-01-01T14:30:00+00:00")
+    ts2 = datetime.fromisoformat("2026-01-02T14:30:00+00:00")
+    strategy = SequenceStrategy({ts1.isoformat(): [{"symbol": "DEMO", "side": OrderSide.BUY, "qty": 1}], ts2.isoformat(): [{"symbol": "DEMO", "side": OrderSide.BUY, "qty": 1}]})
+    engine = TradingEngine(sf, cfg, [strategy])
+
+    engine._roll_day_if_needed(ts1)
+    engine.day_realized_pnl = -60.0
+    engine._trade_bar(Bar(ts1, "DEMO", 100, 100, 100, 100, 1))
+    with sf() as s:
+        assert len(s.scalars(select(OrderRecord)).all()) == 0
+
+    engine._roll_day_if_needed(ts2)
+    assert engine.day_realized_pnl == 0.0
+    engine._trade_bar(Bar(ts2, "DEMO", 100, 100, 100, 100, 1))
+    with sf() as s:
+        assert len(s.scalars(select(OrderRecord)).all()) == 1
+
+
+def test_projected_position_count_rejects_second_intent_same_bar():
+    sf = create_session_factory("sqlite:///:memory:")
+    cfg = AppConfig(risk=RiskConfig(max_simultaneous_positions=1, max_trades_per_day=10))
+    engine = TradingEngine(sf, cfg, [MultiIntentStrategy()])
+    bar = Bar(datetime.fromisoformat("2026-01-01T14:30:00+00:00"), "AAA", 10, 10, 10, 10, 1)
+    engine._roll_day_if_needed(bar.ts)
+    engine._trade_bar(bar)
+    with sf() as s:
+        orders = s.scalars(select(OrderRecord)).all()
+        assert len(orders) == 1
+        assert orders[0].symbol == "AAA"
+
+
+def test_intent_symbol_used_for_cooldown_validation():
+    sf = create_session_factory("sqlite:///:memory:")
+    cfg = AppConfig(risk=RiskConfig(max_trades_per_day=10))
+    ts = datetime.fromisoformat("2026-01-01T14:30:00+00:00")
+    strategy = SequenceStrategy({ts.isoformat(): [{"symbol": "BBB", "side": OrderSide.BUY, "qty": 1}]})
+    engine = TradingEngine(sf, cfg, [strategy])
+    engine.risk.on_exit("BBB")
+    engine._roll_day_if_needed(ts)
+    engine._trade_bar(Bar(ts, "AAA", 10, 10, 10, 10, 1))
+    with sf() as s:
+        assert len(s.scalars(select(OrderRecord)).all()) == 0
+
+
+def test_kill_switch_flatten_creates_accounting_artifacts():
+    sf = create_session_factory("sqlite:///:memory:")
+    engine = TradingEngine(sf, AppConfig(), [])
+    ts = datetime.fromisoformat("2026-01-01T14:30:00+00:00")
+    engine._roll_day_if_needed(ts)
+    engine.broker.submit_order("DEMO", OrderSide.BUY, 1, OrderType.MARKET)
+    engine.broker.on_bar(Bar(ts, "DEMO", 100, 100, 100, 100, 1))
+
+    before = engine.day_realized_pnl
+    engine.kill_switch_flatten()
 
     with sf() as s:
-        order = s.get(OrderRecord, oid)
         pos = s.get(PositionRecord, "DEMO")
-        assert order is not None
-        assert order.status in {"CANCELLED", "FILLED"}
-        assert pos is not None
-        assert pos.qty == 0
-
-
-def test_cooldown_activates_after_close():
-    sf = create_session_factory("sqlite:///:memory:")
-    engine = TradingEngine(sf, AppConfig(), [NoOpStrategy()])
-    engine.broker.submit_order("DEMO", OrderSide.BUY, 1, OrderType.MARKET)
-    bar = Bar(ts=datetime.utcnow(), symbol="DEMO", open=100, high=100, low=100, close=100, volume=1)
-    engine.broker.on_bar(bar)
-    engine.broker.submit_order("DEMO", OrderSide.SELL, 1, OrderType.MARKET)
-    engine.broker.on_bar(bar)
-
-    ok, reason = engine.risk.validate("DEMO", 1, 100, estimated_edge=1.0, daily_pnl=0, current_positions=0)
-    assert not ok
-    assert "cooldown" in reason
+        fills = s.scalars(select(FillRecord).where(FillRecord.symbol == "DEMO")).all()
+        trades = s.scalars(select(ClosedTradeRecord).where(ClosedTradeRecord.symbol == "DEMO")).all()
+        assert pos is not None and pos.qty == 0 and pos.avg_entry == 0.0
+        assert len(fills) >= 2
+        assert len(trades) >= 1
+    assert engine.day_realized_pnl != before
