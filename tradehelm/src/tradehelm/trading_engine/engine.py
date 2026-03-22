@@ -8,11 +8,21 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import sessionmaker
 
+from tradehelm.analytics.service import AnalyticsService
 from tradehelm.config.models import AppConfig
-from tradehelm.persistence.db import EventLog, FillRecord, OrderRecord, PositionRecord, ReplaySessionRecord, StateTransition
+from tradehelm.persistence.db import (
+    ClosedTradeRecord,
+    DecisionRecord,
+    EventLog,
+    FillRecord,
+    OrderRecord,
+    PositionRecord,
+    ReplaySessionRecord,
+    StateTransition,
+)
 from tradehelm.persistence.state_store import PersistedStateStore, RuntimeMetadata
 from tradehelm.providers.interfaces import Strategy
 from tradehelm.providers.replay import ReplayMarketDataProvider
@@ -56,6 +66,7 @@ class TradingEngine:
             on_realized_pnl=self._on_realized_delta,
         )
         self.strategies = {s.strategy_id: StrategyState(strategy=s, enabled=True) for s in strategies}
+        self.analytics = AnalyticsService(session_factory)
 
         self.replay_loaded = False
         self.replay_path: str | None = None
@@ -63,6 +74,7 @@ class TradingEngine:
         self.replay_stop_requested = False
         self.replay_started_at: datetime | None = None
         self.replay_completed_at: datetime | None = None
+        self.active_replay_session_id: int | None = None
         self._replay_thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
@@ -160,6 +172,20 @@ class TradingEngine:
         self._persist_runtime_metadata()
         return new_mode
 
+    def _update_replay_session(self, status: str, started_at: datetime | None = None, completed_at: datetime | None = None) -> None:
+        if self.active_replay_session_id is None:
+            return
+        with self.session_factory() as s:
+            session = s.get(ReplaySessionRecord, self.active_replay_session_id)
+            if session is None:
+                return
+            session.status = status
+            if started_at is not None:
+                session.started_at = started_at
+            if completed_at is not None:
+                session.completed_at = completed_at
+            s.commit()
+
     def load_replay(self, csv_path: str) -> None:
         path = Path(csv_path).expanduser().resolve()
         if not path.exists() or not path.is_file() or path.suffix.lower() != ".csv":
@@ -172,9 +198,12 @@ class TradingEngine:
         self.replay_path = str(path)
         self._reset_day_counters(None)
         self._persist_runtime_metadata()
+        now = datetime.utcnow()
         with self.session_factory() as s:
-            s.add(ReplaySessionRecord(dataset=str(path), status="LOADED"))
+            row = ReplaySessionRecord(dataset=str(path), loaded_at=now, status="LOADED")
+            s.add(row)
             s.commit()
+            self.active_replay_session_id = row.id
 
     def start_replay(self) -> dict[str, Any]:
         """Start replay worker in background thread."""
@@ -187,6 +216,7 @@ class TradingEngine:
             self.replay_running = True
             self.replay_started_at = datetime.now(timezone.utc)
             self.replay_completed_at = None
+            self._update_replay_session("RUNNING", started_at=datetime.utcnow())
             self._replay_thread = threading.Thread(target=self._run_replay_worker, daemon=True)
             self._replay_thread.start()
             return {"started": True}
@@ -205,11 +235,18 @@ class TradingEngine:
         return {"strategy_id": strategy_id, "enabled": enabled}
 
     def _run_replay_worker(self) -> None:
+        status = "COMPLETED"
         try:
             self._run_replay_loop()
+            if self.replay_stop_requested:
+                status = "STOPPED"
+        except Exception:
+            status = "FAILED"
+            raise
         finally:
             self.replay_running = False
             self.replay_completed_at = datetime.now(timezone.utc)
+            self._update_replay_session(status, completed_at=datetime.utcnow())
 
     def _run_replay_loop(self) -> None:
         for bar in self.market_data.bars():
@@ -238,6 +275,21 @@ class TradingEngine:
                 if intents:
                     self.log("INFO", "observe_signal", f"{ss.strategy.strategy_id} intents={len(intents)}")
 
+    def _record_decision(self, strategy_id: str, symbol: str, side: str, qty: int, accepted: bool, reason: str) -> None:
+        with self.session_factory() as s:
+            s.add(
+                DecisionRecord(
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    side=side,
+                    qty=qty,
+                    accepted=1 if accepted else 0,
+                    reason=reason,
+                    mode=self.state_machine.mode.value,
+                )
+            )
+            s.commit()
+
     def _trade_bar(self, bar) -> None:
         day_unrealized_pnl = self.unrealized_pnl()
         daily_pnl = self.day_realized_pnl + day_unrealized_pnl
@@ -255,14 +307,16 @@ class TradingEngine:
                 opening_new_symbol = symbol not in projected_open_symbols
                 ok, reason = self.risk.validate(symbol, qty, bar.close, net_edge, daily_pnl, len(projected_open_symbols))
                 if not ok:
+                    self._record_decision(ss.strategy.strategy_id, symbol, intent["side"].value, qty, accepted=False, reason=reason)
                     self.log("WARN", "risk_reject", reason)
                     continue
-                self.broker.submit_order(
+                order_id = self.broker.submit_order(
                     symbol=symbol,
                     side=intent["side"],
                     qty=qty,
                     order_type=OrderType.MARKET,
                 )
+                self._record_decision(ss.strategy.strategy_id, symbol, intent["side"].value, qty, accepted=True, reason=f"accepted order={order_id}")
                 self.risk.trades_today += 1
                 if opening_new_symbol:
                     projected_open_symbols.add(symbol)
@@ -278,6 +332,29 @@ class TradingEngine:
 
         for symbol in open_symbols:
             self.broker.force_flatten_symbol(symbol, now, latest_prices.get(symbol))
+
+    def reset_paper_records(self) -> dict[str, int]:
+        with self.session_factory() as s:
+            counts = {
+                "orders": s.query(OrderRecord).count(),
+                "fills": s.query(FillRecord).count(),
+                "positions": s.query(PositionRecord).count(),
+                "closed_trades": s.query(ClosedTradeRecord).count(),
+                "decisions": s.query(DecisionRecord).count(),
+                "replay_sessions": s.query(ReplaySessionRecord).count(),
+            }
+            s.execute(delete(OrderRecord))
+            s.execute(delete(FillRecord))
+            s.execute(delete(PositionRecord))
+            s.execute(delete(ClosedTradeRecord))
+            s.execute(delete(DecisionRecord))
+            s.execute(delete(ReplaySessionRecord))
+            s.commit()
+        self._reset_day_counters(None)
+        self.replay_started_at = None
+        self.replay_completed_at = None
+        self.active_replay_session_id = None
+        return counts
 
     def orders(self) -> list[dict]:
         with self.session_factory() as s:
@@ -297,15 +374,20 @@ class TradingEngine:
                     "avg_entry": p.avg_entry,
                     "last_price": p.last_price,
                     "realized_pnl": p.realized_pnl,
+                    "opened_at": p.opened_at.isoformat() if p.opened_at else None,
+                    "cumulative_fees": p.cumulative_fees,
                 }
                 for p in rows
             ]
 
     def trades(self) -> list[dict]:
-        with self.session_factory() as s:
-            from tradehelm.persistence.db import ClosedTradeRecord
+        return self.analytics.trades()
 
-            return [t.__dict__ for t in s.scalars(select(ClosedTradeRecord)).all()]
+    def sessions(self) -> list[dict]:
+        return self.analytics.sessions()
+
+    def decisions(self) -> list[dict]:
+        return self.analytics.decisions()
 
     def logs(self) -> list[dict]:
         with self.session_factory() as s:
