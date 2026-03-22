@@ -1,7 +1,7 @@
 """Core domain types for TradeHelm."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -40,6 +40,13 @@ class OrderStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
+class StrategyAction(str, Enum):
+    """Supported deterministic strategy actions."""
+
+    ENTRY = "ENTRY"
+    EXIT = "EXIT"
+
+
 @dataclass(slots=True)
 class Bar:
     """Represents one replay bar for a symbol."""
@@ -51,3 +58,16 @@ class Bar:
     low: float
     close: float
     volume: float
+
+
+@dataclass(slots=True)
+class StrategyIntent:
+    """Typed strategy intent produced by deterministic strategy logic."""
+
+    symbol: str
+    side: OrderSide
+    qty: int
+    action: StrategyAction
+    strategy_id: str
+    reason: str = ""
+    metadata: dict[str, float | int | str | bool] = field(default_factory=dict)

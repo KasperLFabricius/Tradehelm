@@ -92,8 +92,9 @@ def render() -> None:
     if strategies.ok:
         for item in strategies.payload or []:
             c1, c2, c3 = st.columns([2, 1, 1])
-            c1.write(item)
             sid = item["strategy_id"]
+            c1.write(f"{sid} enabled={item.get('enabled')}")
+            c1.json(item.get("status", {}))
             if c2.button(f"Enable {sid}"):
                 notify_action(call_api(api, "POST", f"/strategies/{sid}/enable"), f"{sid} enabled.")
             if c3.button(f"Disable {sid}"):

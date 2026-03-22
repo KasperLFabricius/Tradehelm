@@ -31,7 +31,7 @@ from tradehelm.trading_engine.cost_model import GenericCostModel
 from tradehelm.trading_engine.errors import InvalidReplayPathError, InvalidTransitionError, ReplayNotLoadedError, StrategyNotFoundError
 from tradehelm.trading_engine.paper_broker import PaperBroker
 from tradehelm.trading_engine.state_machine import BotStateMachine
-from tradehelm.trading_engine.types import BotMode, OrderType
+from tradehelm.trading_engine.types import Bar, BotMode, OrderType, StrategyAction, StrategyIntent
 
 
 @dataclass
@@ -136,6 +136,14 @@ class TradingEngine:
             s.add(EventLog(level=level, event_type=event_type, message=message))
             s.commit()
 
+    def _apply_strategy_configs(self) -> None:
+        for sid, state in self.strategies.items():
+            if hasattr(state.strategy, "config"):
+                if sid == "orb":
+                    state.strategy.config = self.config.strategies.orb
+                elif sid == "vwap":
+                    state.strategy.config = self.config.strategies.vwap
+
     def apply_config(self, new_config: AppConfig, persist: bool = True) -> dict[str, Any]:
         """Apply runtime config updates to active engine components."""
         self.config = new_config
@@ -147,6 +155,7 @@ class TradingEngine:
         self.market_data.replay_speed = new_config.replay_speed
         self.broker.cost_model = self.cost_model
         self.broker.on_position_closed = self.risk.on_exit
+        self._apply_strategy_configs()
         if persist and self.state_store is not None:
             self.state_store.save_config(new_config)
             self._persist_runtime_metadata()
@@ -268,14 +277,44 @@ class TradingEngine:
             pace = max(0.0, 1.0 / max(self.market_data.replay_speed, 0.1))
             time.sleep(pace)
 
-    def _observe_bar(self, bar) -> None:
+    def _observe_bar(self, bar: Bar) -> None:
         for ss in self.strategies.values():
             if ss.enabled:
                 intents = ss.strategy.on_bar(bar)
                 if intents:
                     self.log("INFO", "observe_signal", f"{ss.strategy.strategy_id} intents={len(intents)}")
 
-    def _record_decision(self, strategy_id: str, symbol: str, side: str, qty: int, accepted: bool, reason: str) -> None:
+    def _record_decision(self, *args, **kwargs) -> None:
+        """Persist strategy decision (typed or legacy signature)."""
+        accepted = bool(kwargs.get("accepted", False))
+        reason = str(kwargs.get("reason", ""))
+
+        strategy_id: str
+        symbol: str
+        side: str
+        qty: int
+
+        if args and isinstance(args[0], StrategyIntent):
+            intent = args[0]
+            strategy_id = intent.strategy_id
+            symbol = intent.symbol
+            side = intent.side.value
+            qty = intent.qty
+            if len(args) >= 3:
+                accepted = bool(args[1])
+                reason = str(args[2])
+        elif len(args) >= 4 and isinstance(args[0], str):
+            strategy_id = str(args[0])
+            symbol = str(args[1])
+            side = str(args[2])
+            qty = int(args[3])
+            if len(args) >= 5:
+                accepted = bool(args[4])
+            if len(args) >= 6:
+                reason = str(args[5])
+        else:
+            raise ValueError("Invalid _record_decision signature")
+
         with self.session_factory() as s:
             s.add(
                 DecisionRecord(
@@ -290,36 +329,96 @@ class TradingEngine:
             )
             s.commit()
 
-    def _trade_bar(self, bar) -> None:
+
+    def _open_qty(self, symbol: str) -> int:
+        with self.session_factory() as s:
+            row = s.get(PositionRecord, symbol)
+            return row.qty if row is not None else 0
+
+    def _normalize_intent(self, fallback_strategy_id: str, intent: StrategyIntent | dict) -> StrategyIntent:
+        if isinstance(intent, StrategyIntent):
+            return intent
+        # backward-compatible fallback for older dict based tests/callers
+        return StrategyIntent(
+            symbol=str(intent["symbol"]),
+            side=intent["side"],
+            qty=int(intent["qty"]),
+            action=intent.get("action", StrategyAction.ENTRY),
+            strategy_id=intent.get("strategy_id", fallback_strategy_id),
+            reason=str(intent.get("reason", "legacy_intent")),
+            metadata=dict(intent.get("metadata", {})),
+        )
+
+    def _notify_strategy(self, strategy: Strategy, hook: str, *args) -> None:
+        fn = getattr(strategy, hook, None)
+        if callable(fn):
+            fn(*args)
+
+    def _trade_bar(self, bar: Bar) -> None:
         day_unrealized_pnl = self.unrealized_pnl()
         daily_pnl = self.day_realized_pnl + day_unrealized_pnl
         projected_open_symbols = {p["symbol"] for p in self.positions() if p["qty"] != 0}
+        submitted_signatures: set[tuple[str, str, str, str, int]] = set()
 
         for ss in self.strategies.values():
             if not ss.enabled:
                 continue
-            for intent in ss.strategy.on_bar(bar):
-                symbol = intent["symbol"]
-                qty = int(intent["qty"])
-                est_cost = self.cost_model.estimate_round_trip_cost(bar.close, qty)
-                gross_edge = float(bar.close * qty * 0.002)
+            raw_intents = ss.strategy.on_bar(bar)
+            for raw_intent in raw_intents:
+                intent = self._normalize_intent(ss.strategy.strategy_id, raw_intent)
+                sig = (intent.strategy_id, intent.symbol, intent.action.value, intent.side.value, intent.qty)
+                if sig in submitted_signatures:
+                    self._record_decision(intent, accepted=False, reason="duplicate_intent_suppressed")
+                    if intent.action == StrategyAction.ENTRY:
+                        self._notify_strategy(ss.strategy, "on_entry_rejected", intent, bar, "duplicate_intent_suppressed")
+                    else:
+                        self._notify_strategy(ss.strategy, "on_exit_rejected", intent, bar, "duplicate_intent_suppressed")
+                    continue
+                submitted_signatures.add(sig)
+
+                if intent.action == StrategyAction.ENTRY and self._open_qty(intent.symbol) != 0:
+                    self._record_decision(intent, accepted=False, reason="entry_suppressed_existing_position")
+                    self._notify_strategy(ss.strategy, "on_entry_rejected", intent, bar, "entry_suppressed_existing_position")
+                    continue
+
+                if intent.action == StrategyAction.EXIT:
+                    if self._open_qty(intent.symbol) == 0:
+                        self._record_decision(intent, accepted=False, reason="exit_rejected_no_position")
+                        self._notify_strategy(ss.strategy, "on_exit_rejected", intent, bar, "exit_rejected_no_position")
+                        continue
+                    order_id = self.broker.submit_order(
+                        symbol=intent.symbol,
+                        side=intent.side,
+                        qty=intent.qty,
+                        order_type=OrderType.MARKET,
+                    )
+                    self._record_decision(intent, accepted=True, reason=intent.reason or f"exit_accepted order={order_id}")
+                    self._notify_strategy(ss.strategy, "on_exit_accepted", intent, bar)
+                    continue
+
+                est_cost = self.cost_model.estimate_round_trip_cost(bar.close, intent.qty)
+                gross_edge = float(bar.close * intent.qty * 0.03)
                 net_edge = gross_edge - est_cost
-                opening_new_symbol = symbol not in projected_open_symbols
-                ok, reason = self.risk.validate(symbol, qty, bar.close, net_edge, daily_pnl, len(projected_open_symbols))
+                opening_new_symbol = intent.symbol not in projected_open_symbols
+                ok, reason = self.risk.validate(intent.symbol, intent.qty, bar.close, net_edge, daily_pnl, len(projected_open_symbols))
                 if not ok:
-                    self._record_decision(ss.strategy.strategy_id, symbol, intent["side"].value, qty, accepted=False, reason=reason)
+                    self._record_decision(intent, accepted=False, reason=reason)
+                    self._notify_strategy(ss.strategy, "on_entry_rejected", intent, bar, reason)
                     self.log("WARN", "risk_reject", reason)
                     continue
+
                 order_id = self.broker.submit_order(
-                    symbol=symbol,
-                    side=intent["side"],
-                    qty=qty,
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    qty=intent.qty,
                     order_type=OrderType.MARKET,
                 )
-                self._record_decision(ss.strategy.strategy_id, symbol, intent["side"].value, qty, accepted=True, reason=f"accepted order={order_id}")
+                accept_reason = intent.reason or f"entry_accepted order={order_id}"
+                self._record_decision(intent, accepted=True, reason=accept_reason)
+                self._notify_strategy(ss.strategy, "on_entry_accepted", intent, bar)
                 self.risk.trades_today += 1
                 if opening_new_symbol:
-                    projected_open_symbols.add(symbol)
+                    projected_open_symbols.add(intent.symbol)
 
     def kill_switch_flatten(self) -> None:
         now = datetime.now(timezone.utc)
