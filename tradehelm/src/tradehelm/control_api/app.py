@@ -14,7 +14,8 @@ from sqlalchemy import text
 from tradehelm.config.models import AppConfig
 from tradehelm.historical.backtest_runner import BacktestRunner
 from tradehelm.historical.cache import HistoricalCache
-from tradehelm.historical.interfaces import SUPPORTED_INTERVAL
+from tradehelm.historical.interfaces import DEFAULT_INTERVAL
+from tradehelm.historical.intervals import supported_intervals
 from tradehelm.historical.service import HistoricalRequest, HistoricalService
 from tradehelm.historical.twelvedata import TwelveDataHistoricalProvider
 from tradehelm.persistence.db import create_session_factory
@@ -53,7 +54,7 @@ class HistoricalFetchRequest(BaseModel):
     symbols: list[str]
     start_date: date
     end_date: date
-    interval: str = SUPPORTED_INTERVAL
+    interval: str = DEFAULT_INTERVAL
     adjusted: bool = True
     use_existing_cache: bool = True
 
@@ -62,8 +63,12 @@ class BacktestLaunchRequest(BaseModel):
     symbols: list[str]
     start_date: date
     end_date: date
-    interval: str = SUPPORTED_INTERVAL
+    interval: str = DEFAULT_INTERVAL
     adjusted: bool = True
+
+class BacktestCompareRequest(BaseModel):
+    run_ids: list[int]
+
 
 
 def build_historical_stack(session_factory, config: AppConfig) -> tuple[HistoricalCache, HistoricalService, BacktestRunner]:
@@ -254,6 +259,10 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
             return JSONResponse(status_code=400, content=payload)
         return {"cleared": engine.reset_paper_records()}
 
+    @app.get("/historical/intervals")
+    def historical_intervals() -> dict:
+        return {"intervals": supported_intervals(), "default": DEFAULT_INTERVAL}
+
     @app.post("/historical/fetch")
     def historical_fetch(req: HistoricalFetchRequest):
         assert historical_service is not None
@@ -326,6 +335,16 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
     def backtests_runs() -> list[dict]:
         assert backtest_runner is not None
         return backtest_runner.list_runs()
+
+    @app.post("/backtests/compare")
+    def backtests_compare(req: BacktestCompareRequest):
+        assert backtest_runner is not None
+        if len(req.run_ids) < 2:
+            return JSONResponse(
+                status_code=400,
+                content=ApiError(error={"code": "invalid_compare_request", "message": "Provide at least two run IDs."}).model_dump(),
+            )
+        return backtest_runner.compare_runs(req.run_ids)
 
     @app.get("/backtests/{run_id}")
     def backtests_run_detail(run_id: int):

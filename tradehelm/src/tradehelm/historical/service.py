@@ -6,7 +6,7 @@ from datetime import date
 
 from tradehelm.historical.adjustments import apply_corporate_action_adjustments
 from tradehelm.historical.cache import HistoricalCache
-from tradehelm.historical.interfaces import SUPPORTED_INTERVAL
+from tradehelm.historical.intervals import ensure_supported_interval, supported_intervals
 from tradehelm.historical.twelvedata import HistoricalProviderError, TwelveDataHistoricalProvider
 
 
@@ -39,8 +39,11 @@ class HistoricalService:
                 raise HistoricalValidationError("invalid_symbols", f"Invalid US equity symbol: {symbol}")
         if req.end_date < req.start_date:
             raise HistoricalValidationError("invalid_date_range", "end_date must be on or after start_date.")
-        if req.interval != SUPPORTED_INTERVAL:
-            raise HistoricalValidationError("unsupported_interval", f"Only {SUPPORTED_INTERVAL} is supported in v1.")
+        try:
+            ensure_supported_interval(req.interval)
+        except ValueError:
+            allowed = ", ".join(supported_intervals())
+            raise HistoricalValidationError("unsupported_interval", f"Unsupported interval: {req.interval}. Supported intervals: {allowed}.")
 
     def fetch_and_cache(self, req: HistoricalRequest, use_existing: bool = True) -> dict:
         self.validate_request(req)

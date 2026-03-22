@@ -7,7 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
-from tradehelm.historical.interfaces import DividendEvent, HistoricalDataProvider, SUPPORTED_INTERVAL, SplitEvent
+from tradehelm.historical.interfaces import DividendEvent, HistoricalDataProvider, SplitEvent
+from tradehelm.historical.intervals import interval_to_timedelta
 from tradehelm.trading_engine.types import Bar
 
 
@@ -72,7 +73,9 @@ class TwelveDataHistoricalProvider(HistoricalDataProvider):
         raise HistoricalProviderError("provider_failure", f"Twelve Data request failed: {last_error}")
 
     def fetch_bars(self, symbol: str, interval: str, start_date: date, end_date: date) -> list[Bar]:
-        if interval != SUPPORTED_INTERVAL:
+        try:
+            overlap = interval_to_timedelta(interval)
+        except ValueError:
             raise HistoricalProviderError("unsupported_interval", f"Unsupported interval: {interval}")
         start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
         end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
@@ -108,7 +111,7 @@ class TwelveDataHistoricalProvider(HistoricalDataProvider):
                 )
             if chunk_end >= end_dt:
                 break
-            cursor = chunk_end - timedelta(minutes=5)
+            cursor = chunk_end - overlap
 
         bars = sorted(bars_by_ts.values(), key=lambda b: b.ts)
         return bars

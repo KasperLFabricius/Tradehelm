@@ -8,7 +8,7 @@ from datetime import date, datetime
 from tradehelm.trading_engine.types import Bar
 
 
-SUPPORTED_INTERVAL = "5min"
+DEFAULT_INTERVAL = "5min"
 
 
 @dataclass(slots=True)

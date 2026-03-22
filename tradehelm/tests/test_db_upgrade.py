@@ -107,3 +107,33 @@ def test_app_start_and_analytics_endpoints_work_after_upgrade(tmp_path):
         assert trades.status_code == 200
         assert sessions.status_code == 200
         assert summary.json()["total_closed_trades"] >= 1
+
+
+def test_sqlite_upgrade_adds_backtest_run_snapshot_and_artifact_columns(tmp_path):
+    db = tmp_path / "legacy_bt_upgrade.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE backtest_runs (
+            id INTEGER PRIMARY KEY,
+            provider TEXT,
+            symbols_csv TEXT,
+            interval TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            adjusted INTEGER,
+            status TEXT,
+            dataset_keys_csv TEXT,
+            summary_json TEXT,
+            started_at DATETIME,
+            completed_at DATETIME,
+            created_at DATETIME
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    create_session_factory(f"sqlite:///{db}")
+    cols = _columns(db, "backtest_runs")
+    assert {"config_json", "equity_curve_json", "symbol_summary_json", "decision_summary_json", "trades_json", "decisions_json"}.issubset(cols)

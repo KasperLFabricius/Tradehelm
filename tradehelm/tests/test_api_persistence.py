@@ -112,7 +112,7 @@ def test_historical_fetch_rejects_unsupported_interval(tmp_path):
                 "symbols": ["AAPL"],
                 "start_date": "2026-01-01",
                 "end_date": "2026-01-02",
-                "interval": "1min",
+                "interval": "2min",
                 "adjusted": True,
             },
         )
@@ -150,3 +150,19 @@ def test_backtest_requires_cached_dataset(tmp_path):
         )
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "no_cached_dataset_available"
+
+
+def test_backtest_compare_requires_two_runs(tmp_path):
+    with _client_for(tmp_path / "compare_endpoint.db") as client:
+        response = client.post("/backtests/compare", json={"run_ids": [1]})
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_compare_request"
+
+
+def test_historical_intervals_endpoint(tmp_path):
+    with _client_for(tmp_path / "intervals.db") as client:
+        response = client.get("/historical/intervals")
+        assert response.status_code == 200
+        payload = response.json()
+        assert "5min" in payload["intervals"]
+        assert payload["default"] == "5min"

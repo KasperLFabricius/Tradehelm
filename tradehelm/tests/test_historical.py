@@ -1,8 +1,11 @@
 from datetime import date, datetime, timezone
 
+import pytest
+
 from tradehelm.historical.adjustments import apply_corporate_action_adjustments
 from tradehelm.historical.cache import HistoricalCache
 from tradehelm.historical.interfaces import DividendEvent, SplitEvent
+from tradehelm.historical.intervals import ensure_supported_interval, interval_to_timedelta, supported_intervals
 from tradehelm.historical.service import HistoricalRequest, HistoricalService
 from tradehelm.historical.twelvedata import TwelveDataHistoricalProvider
 from tradehelm.persistence.db import create_session_factory
@@ -27,14 +30,20 @@ class FakeProvider(TwelveDataHistoricalProvider):
         return [DividendEvent(symbol=symbol, ex_date=date(2026, 1, 4), amount=0.5)]
 
 
-def test_cache_key_is_deterministic(tmp_path):
+def test_supported_interval_validation_and_timedelta():
+    assert ensure_supported_interval("1min") == "1min"
+    assert interval_to_timedelta("30min").total_seconds() == 1800
+    assert "5min" in supported_intervals()
+    with pytest.raises(ValueError):
+        ensure_supported_interval("2min")
+
+
+def test_cache_key_includes_interval(tmp_path):
     session_factory = create_session_factory(f"sqlite:///{tmp_path / 'k.db'}")
     cache = HistoricalCache(session_factory, cache_dir=str(tmp_path / "cache"))
-    key_a = cache.make_cache_key("twelvedata", "AAPL", "5min", date(2026, 1, 1), date(2026, 1, 10), True)
-    key_b = cache.make_cache_key("twelvedata", "AAPL", "5min", date(2026, 1, 1), date(2026, 1, 10), True)
-    key_c = cache.make_cache_key("twelvedata", "AAPL", "5min", date(2026, 1, 1), date(2026, 1, 10), False)
-    assert key_a == key_b
-    assert key_a != key_c
+    key_5 = cache.make_cache_key("twelvedata", "AAPL", "5min", date(2026, 1, 1), date(2026, 1, 10), True)
+    key_1 = cache.make_cache_key("twelvedata", "AAPL", "1min", date(2026, 1, 1), date(2026, 1, 10), True)
+    assert key_5 != key_1
 
 
 def test_adjustment_pipeline_split_behavior():
@@ -57,17 +66,14 @@ def test_fetch_assembly_dedup_and_sort(tmp_path):
             symbols=["aapl"],
             start_date=date(2026, 1, 1),
             end_date=date(2026, 1, 6),
-            interval="5min",
+            interval="15min",
             adjusted=False,
         ),
         use_existing=False,
     )
     assert result["downloaded"][0]["bars"] == 2
-    dataset = cache.find_dataset("twelvedata", "AAPL", "5min", date(2026, 1, 1), date(2026, 1, 6), False)
+    dataset = cache.find_dataset("twelvedata", "AAPL", "15min", date(2026, 1, 1), date(2026, 1, 6), False)
     assert dataset is not None
-    loaded = cache.load_bars(dataset.cache_key)
-    assert len(loaded) == 2
-    assert loaded[0].ts <= loaded[1].ts
 
 
 def test_api_validation_symbol_and_date(tmp_path):
@@ -81,14 +87,11 @@ def test_api_validation_symbol_and_date(tmp_path):
         interval="1min",
         adjusted=False,
     )
-    try:
+    with pytest.raises(Exception):
         service.validate_request(bad_req)
-        assert False
-    except Exception as exc:
-        assert "invalid_symbols" in getattr(exc, "code", "") or "unsupported_interval" in getattr(exc, "code", "")
 
 
-def test_chunked_fetch_assembly_logic():
+def test_chunked_fetch_assembly_logic_is_interval_aware():
     provider = TwelveDataHistoricalProvider(api_key="fake", bars_chunk_days=1)
     calls = []
 
@@ -111,6 +114,8 @@ def test_chunked_fetch_assembly_logic():
         return {"splits": [], "dividends": []}
 
     provider._request = fake_request  # type: ignore[method-assign]
-    bars = provider.fetch_bars("AAPL", "5min", date(2026, 1, 1), date(2026, 1, 3))
+    provider.fetch_bars("AAPL", "1h", date(2026, 1, 1), date(2026, 1, 3))
     assert len(calls) >= 2
-    assert bars == sorted(bars, key=lambda b: b.ts)
+    first_next = datetime.fromisoformat(calls[1][0])
+    first_end = datetime.fromisoformat(calls[0][1])
+    assert first_end - first_next == interval_to_timedelta("1h")

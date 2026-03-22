@@ -147,8 +147,12 @@ class BacktestRunRecord(Base):
     status: Mapped[str] = mapped_column(String(24), default="PENDING")
     dataset_keys_csv: Mapped[str] = mapped_column(Text, default="")
     summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
     trades_json: Mapped[str] = mapped_column(Text, default="[]")
     decisions_json: Mapped[str] = mapped_column(Text, default="[]")
+    equity_curve_json: Mapped[str] = mapped_column(Text, default="[]")
+    symbol_summary_json: Mapped[str] = mapped_column(Text, default="[]")
+    decision_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -183,8 +187,12 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
             "completed_at": "ALTER TABLE replay_sessions ADD COLUMN completed_at DATETIME",
         },
         "backtest_runs": {
+            "config_json": "ALTER TABLE backtest_runs ADD COLUMN config_json TEXT DEFAULT '{}'",
             "trades_json": "ALTER TABLE backtest_runs ADD COLUMN trades_json TEXT DEFAULT '[]'",
             "decisions_json": "ALTER TABLE backtest_runs ADD COLUMN decisions_json TEXT DEFAULT '[]'",
+            "equity_curve_json": "ALTER TABLE backtest_runs ADD COLUMN equity_curve_json TEXT DEFAULT '[]'",
+            "symbol_summary_json": "ALTER TABLE backtest_runs ADD COLUMN symbol_summary_json TEXT DEFAULT '[]'",
+            "decision_summary_json": "ALTER TABLE backtest_runs ADD COLUMN decision_summary_json TEXT DEFAULT '{}'",
         },
     }
 
@@ -203,6 +211,12 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
         conn.execute(text("UPDATE closed_trades SET net_pnl = COALESCE(net_pnl, pnl)"))
         conn.execute(text("UPDATE replay_sessions SET loaded_at = COALESCE(loaded_at, started_at, CURRENT_TIMESTAMP)"))
         conn.execute(text("UPDATE replay_sessions SET status = COALESCE(NULLIF(status, ''), 'LOADED')"))
+        conn.execute(text("UPDATE backtest_runs SET config_json = COALESCE(config_json, '{}')"))
+        conn.execute(text("UPDATE backtest_runs SET trades_json = COALESCE(trades_json, '[]')"))
+        conn.execute(text("UPDATE backtest_runs SET decisions_json = COALESCE(decisions_json, '[]')"))
+        conn.execute(text("UPDATE backtest_runs SET equity_curve_json = COALESCE(equity_curve_json, '[]')"))
+        conn.execute(text("UPDATE backtest_runs SET symbol_summary_json = COALESCE(symbol_summary_json, '[]')"))
+        conn.execute(text("UPDATE backtest_runs SET decision_summary_json = COALESCE(decision_summary_json, '{}')"))
 
 
 def create_session_factory(db_url: str = "sqlite:///tradehelm.db") -> sessionmaker:
