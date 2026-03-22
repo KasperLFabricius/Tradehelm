@@ -309,9 +309,11 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
                 )
             )
             symbols = sorted({s.strip().upper() for s in req.symbols if s.strip()})
+            request = req.model_copy(update={"symbols": symbols})
+            backtest_runner.validate_request_overrides(request)
             return backtest_runner.enqueue_job(
                 provider=historical_service.provider.name,
-                request=req.model_copy(update={"symbols": symbols}),
+                request=request,
             )
         except ValueError as exc:
             if str(exc).startswith("no_cached_dataset_available:"):
@@ -320,7 +322,18 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
                     error={"code": "no_cached_dataset_available", "message": f"No cached dataset available for {symbol}."}
                 ).model_dump()
                 return JSONResponse(status_code=400, content=payload)
+            if str(exc).startswith("unknown_strategy_override:"):
+                bad = str(exc).split(":", 1)[1]
+                payload = ApiError(
+                    error={"code": "invalid_backtest_request", "message": f"Unknown strategy override(s): {bad}."}
+                ).model_dump()
+                return JSONResponse(status_code=400, content=payload)
             raise
+        except ValidationError as exc:
+            payload = ApiError(
+                error={"code": "invalid_backtest_request", "message": f"Invalid backtest override payload: {exc.errors()}"}
+            ).model_dump()
+            return JSONResponse(status_code=422, content=payload)
         except Exception as exc:
             status, payload = historical_service.map_error(exc)
             return JSONResponse(status_code=status, content=ApiError(error=payload).model_dump())

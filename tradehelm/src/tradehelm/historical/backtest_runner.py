@@ -13,7 +13,15 @@ from sqlalchemy.orm import sessionmaker
 from tradehelm.analytics.service import AnalyticsService
 from tradehelm.backtests.events import BacktestEventService
 from tradehelm.backtests.models import BacktestRequest
-from tradehelm.config.models import AppConfig
+from tradehelm.config.models import (
+    AppConfig,
+    FrictionConfig,
+    GapOrbStrategyConfig,
+    OrbStrategyConfig,
+    RiskConfig,
+    VwapMeanReversionStrategyConfig,
+    VwapStrategyConfig,
+)
 from tradehelm.historical.cache import HistoricalCache
 from tradehelm.historical.intervals import ensure_supported_interval
 from tradehelm.historical.run_analysis import RunAnalysisService
@@ -36,6 +44,7 @@ class BacktestRunner:
         self.events = BacktestEventService(session_factory)
         self._worker_thread: threading.Thread | None = None
         self._worker_lock = threading.Lock()
+        self._worker_wakeup = threading.Event()
 
     def _request_dict(self, request: BacktestRequest) -> dict:
         payload = request.model_dump(mode="json")
@@ -44,21 +53,38 @@ class BacktestRunner:
 
     def _resolve_config(self, request: BacktestRequest) -> AppConfig:
         cfg = self.app_config.model_copy(deep=True)
+        known_strategies = {"orb", "vwap", "gap_orb", "vwap_mean_reversion"}
+        unknown = sorted(set((request.strategy_params or {}).keys()) - known_strategies)
+        if unknown:
+            raise ValueError(f"unknown_strategy_override:{','.join(unknown)}")
+
         if request.friction_overrides:
-            cfg.friction = cfg.friction.model_copy(update=request.friction_overrides)
+            friction_payload = cfg.friction.model_dump()
+            friction_payload.update(request.friction_overrides)
+            cfg.friction = FrictionConfig.model_validate(friction_payload)
         if request.risk_overrides:
-            cfg.risk = cfg.risk.model_copy(update=request.risk_overrides)
+            risk_payload = cfg.risk.model_dump()
+            risk_payload.update(request.risk_overrides)
+            cfg.risk = RiskConfig.model_validate(risk_payload)
 
         enabled = set(request.enabled_strategies or [])
         for sid, patch in (request.strategy_params or {}).items():
             if sid == "orb":
-                cfg.strategies.orb = cfg.strategies.orb.model_copy(update=patch)
+                payload = cfg.strategies.orb.model_dump()
+                payload.update(patch)
+                cfg.strategies.orb = OrbStrategyConfig.model_validate(payload)
             elif sid == "vwap":
-                cfg.strategies.vwap = cfg.strategies.vwap.model_copy(update=patch)
+                payload = cfg.strategies.vwap.model_dump()
+                payload.update(patch)
+                cfg.strategies.vwap = VwapStrategyConfig.model_validate(payload)
             elif sid == "gap_orb":
-                cfg.strategies.gap_orb = cfg.strategies.gap_orb.model_copy(update=patch)
+                payload = cfg.strategies.gap_orb.model_dump()
+                payload.update(patch)
+                cfg.strategies.gap_orb = GapOrbStrategyConfig.model_validate(payload)
             elif sid == "vwap_mean_reversion":
-                cfg.strategies.vwap_mean_reversion = cfg.strategies.vwap_mean_reversion.model_copy(update=patch)
+                payload = cfg.strategies.vwap_mean_reversion.model_dump()
+                payload.update(patch)
+                cfg.strategies.vwap_mean_reversion = VwapMeanReversionStrategyConfig.model_validate(payload)
 
         if request.enabled_strategies is not None:
             cfg.strategies.orb.enabled = "orb" in enabled
@@ -66,6 +92,9 @@ class BacktestRunner:
             cfg.strategies.gap_orb.enabled = "gap_orb" in enabled
             cfg.strategies.vwap_mean_reversion.enabled = "vwap_mean_reversion" in enabled
         return cfg
+
+    def validate_request_overrides(self, request: BacktestRequest) -> None:
+        self._resolve_config(request)
 
     def _build_engine(self, run_session_factory: sessionmaker, resolved_config: AppConfig) -> TradingEngine:
         return TradingEngine(
@@ -246,6 +275,7 @@ class BacktestRunner:
             session.commit()
             job_id = row.id
         self.events.add(job_id, "job_queued", "Backtest job queued.")
+        self._worker_wakeup.set()
         self._ensure_worker(provider)
         return self.get_job(job_id) or {"id": job_id, "status": "QUEUED"}
 
@@ -253,15 +283,25 @@ class BacktestRunner:
         with self._worker_lock:
             if self._worker_thread and self._worker_thread.is_alive():
                 return
+            self._worker_wakeup.clear()
             self._worker_thread = threading.Thread(target=self._worker_loop, args=(provider,), daemon=True)
             self._worker_thread.start()
 
     def _worker_loop(self, provider: str) -> None:
+        idle_polls = 0
         while True:
             with self.main_session_factory() as session:
                 row = session.scalars(select(BacktestJobRecord).where(BacktestJobRecord.status == "QUEUED").order_by(BacktestJobRecord.id)).first()
                 if row is None:
-                    return
+                    idle_polls += 1
+                    if idle_polls >= 5:
+                        with self._worker_lock:
+                            self._worker_thread = None
+                        return
+                    self._worker_wakeup.wait(timeout=0.1)
+                    self._worker_wakeup.clear()
+                    continue
+                idle_polls = 0
                 row.status = "RUNNING"
                 row.started_at = datetime.now(timezone.utc)
                 session.commit()

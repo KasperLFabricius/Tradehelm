@@ -1,6 +1,9 @@
 import time
 from datetime import date, datetime, timezone, timedelta
 
+import pytest
+from pydantic import ValidationError
+
 from tradehelm.backtests.models import BacktestRequest
 from tradehelm.config.models import AppConfig
 from tradehelm.historical.backtest_runner import BacktestRunner
@@ -129,3 +132,83 @@ def test_vwap_mean_reversion_emits_signal_in_synthetic_data():
     s.on_bar(Bar(t0 + timedelta(minutes=1), "AAA", 100.0, 100.1, 99.0, 99.2, 1000))
     intents = s.on_bar(Bar(t0 + timedelta(minutes=2), "AAA", 99.2, 99.8, 99.1, 99.7, 1000))
     assert any(i.reason in {"vwap_mr_revert_long", "vwap_mr_revert_short"} for i in intents)
+
+
+def test_invalid_overrides_are_validated(tmp_path):
+    sf = create_session_factory(f"sqlite:///{tmp_path / 'invalid_overrides.db'}")
+    cache = HistoricalCache(sf, cache_dir=str(tmp_path / "cache"))
+    _seed_cache(cache)
+    runner = BacktestRunner(sf, cache, AppConfig())
+
+    with pytest.raises(ValidationError):
+        runner.validate_request_overrides(
+            BacktestRequest(
+                symbols=["AAPL"],
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 3),
+                interval="5min",
+                adjusted=True,
+                strategy_params={"orb": {"max_bars_in_trade": 0}},
+            )
+        )
+    with pytest.raises(ValidationError):
+        runner.validate_request_overrides(
+            BacktestRequest(
+                symbols=["AAPL"],
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 3),
+                interval="5min",
+                adjusted=True,
+                strategy_params={"orb": {"direction": "SIDEWAYS"}},
+            )
+        )
+    with pytest.raises(ValidationError):
+        runner.validate_request_overrides(
+            BacktestRequest(
+                symbols=["AAPL"],
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 3),
+                interval="5min",
+                adjusted=True,
+                risk_overrides={"max_position_size": "bad"},
+            )
+        )
+    with pytest.raises(ValueError):
+        runner.validate_request_overrides(
+            BacktestRequest(
+                symbols=["AAPL"],
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 1, 3),
+                interval="5min",
+                adjusted=True,
+                strategy_params={"unknown_strategy": {"foo": 1}},
+            )
+        )
+
+    runner.validate_request_overrides(
+        BacktestRequest(
+            symbols=["AAPL"],
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 3),
+            interval="5min",
+            adjusted=True,
+            strategy_params={"orb": {"max_bars_in_trade": 3}},
+            risk_overrides={"max_trades_per_day": 10},
+        )
+    )
+
+
+def test_worker_does_not_strand_late_enqueued_job(tmp_path):
+    sf = create_session_factory(f"sqlite:///{tmp_path / 'race.db'}")
+    cache = HistoricalCache(sf, cache_dir=str(tmp_path / "cache"))
+    _seed_cache(cache, bars=30)
+    runner = BacktestRunner(sf, cache, AppConfig())
+
+    first = runner.enqueue_job("twelvedata", BacktestRequest(symbols=["AAPL"], start_date=date(2026, 1, 1), end_date=date(2026, 1, 3), interval="5min", adjusted=True))
+    _wait_for_status(runner, first["id"], {"COMPLETED"})
+
+    # enqueue shortly after queue drain to exercise worker idle/exit boundary
+    time.sleep(0.12)
+    second = runner.enqueue_job("twelvedata", BacktestRequest(symbols=["AAPL"], start_date=date(2026, 1, 1), end_date=date(2026, 1, 3), interval="5min", adjusted=True))
+    outcome = _wait_for_status(runner, second["id"], {"RUNNING", "COMPLETED"}, timeout=4.0)
+    assert outcome["status"] in {"RUNNING", "COMPLETED"}

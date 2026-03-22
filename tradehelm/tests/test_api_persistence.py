@@ -159,6 +159,40 @@ def test_backtest_compare_requires_two_runs(tmp_path):
         assert response.json()["error"]["code"] == "invalid_compare_request"
 
 
+def test_backtest_jobs_reject_invalid_override_payload(tmp_path):
+    with _client_for(tmp_path / "invalid_override.db") as client:
+        response = client.post(
+            "/backtests/jobs",
+            json={
+                "symbols": ["AAPL"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-02",
+                "interval": "5min",
+                "adjusted": True,
+                "strategy_params": {"orb": {"max_bars_in_trade": 0}},
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "invalid_backtest_request"
+
+
+def test_backtest_jobs_reject_unknown_strategy_override(tmp_path):
+    with _client_for(tmp_path / "unknown_override.db") as client:
+        response = client.post(
+            "/backtests/jobs",
+            json={
+                "symbols": ["AAPL"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-02",
+                "interval": "5min",
+                "adjusted": True,
+                "strategy_params": {"mystery": {"x": 1}},
+            },
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_backtest_request"
+
+
 def test_historical_intervals_endpoint(tmp_path):
     with _client_for(tmp_path / "intervals.db") as client:
         response = client.get("/historical/intervals")
