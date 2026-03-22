@@ -14,6 +14,7 @@ from tradehelm.persistence.db import create_session_factory
 from tradehelm.persistence.state_store import PersistedStateStore
 from tradehelm.strategies.noop import NoOpStrategy
 from tradehelm.strategies.orb import OpeningRangeBreakoutStrategy
+from tradehelm.strategies.vwap import VwapContinuationStrategy
 from tradehelm.trading_engine.engine import TradingEngine
 from tradehelm.trading_engine.errors import EngineError
 from tradehelm.trading_engine.types import BotMode
@@ -44,7 +45,13 @@ class ResetRequest(BaseModel):
 def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEngine:
     session_factory = create_session_factory(db_url)
     state_store = PersistedStateStore(session_factory)
-    return TradingEngine(session_factory, AppConfig(), [NoOpStrategy(), OpeningRangeBreakoutStrategy()], state_store=state_store)
+    config = AppConfig()
+    strategies = [
+        NoOpStrategy(),
+        OpeningRangeBreakoutStrategy(config.strategies.orb),
+        VwapContinuationStrategy(config.strategies.vwap),
+    ]
+    return TradingEngine(session_factory, config, strategies, state_store=state_store)
 
 
 def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
@@ -133,7 +140,16 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
 
     @app.get("/strategies")
     def strategies() -> list[dict]:
-        return [{"strategy_id": k, "enabled": v.enabled} for k, v in engine.strategies.items()]
+        items = []
+        for sid, state in engine.strategies.items():
+            items.append(
+                {
+                    "strategy_id": sid,
+                    "enabled": state.enabled,
+                    "status": state.strategy.status(),
+                }
+            )
+        return items
 
     @app.post("/strategies/{strategy_id}/enable")
     def enable(strategy_id: str) -> dict:

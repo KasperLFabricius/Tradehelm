@@ -24,8 +24,8 @@ class MultiIntentStrategy(Strategy):
 
     def on_bar(self, bar: Bar) -> list[dict]:
         return [
-            {"symbol": "AAA", "side": OrderSide.BUY, "qty": 1},
-            {"symbol": "BBB", "side": OrderSide.BUY, "qty": 1},
+            {"symbol": "AAA", "side": OrderSide.BUY, "qty": 10},
+            {"symbol": "BBB", "side": OrderSide.BUY, "qty": 10},
         ]
 
 

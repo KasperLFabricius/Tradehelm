@@ -72,6 +72,29 @@ TradeHelm now includes a deterministic replay-review layer intended for strategy
 - PnL attribution is derived from persisted simulated fills/trades and should be treated as diagnostic-grade, not production-grade accounting.
 - Slippage/impact are represented via configured execution-price adjustment assumptions, not full market microstructure.
 
+
+## Deterministic intraday strategies (paper mode)
+
+TradeHelm now ships with two deterministic strategy families designed for replay diagnostics and controllable behavior:
+
+- **ORB (Opening Range Breakout)**
+  - Configurable opening range window (bars).
+  - Single breakout entry per symbol/session by default (anti-spam).
+  - Direction mode: `LONG`, `SHORT`, or `BOTH`.
+  - Configurable breakout buffer, fixed stop-loss, fixed take-profit, max-bars-in-trade, and optional end-of-session flatten.
+  - Emits explicit decision reasons like `orb_breakout_long`, `orb_stop_exit`, `orb_target_exit`, `orb_max_bars_exit`.
+
+- **VWAP continuation / pullback**
+  - Uses deterministic intraday cumulative VWAP alignment.
+  - Waits for pullback toward VWAP and re-expansion before entry.
+  - Direction mode: `LONG`, `SHORT`, or `BOTH`.
+  - Configurable pullback threshold, re-entry buffer, fixed stop-loss, fixed take-profit, and max-bars-in-trade exits.
+  - Emits explicit reasons like `vwap_pullback_entry`, `vwap_stop_exit`, `vwap_target_exit`, `vwap_max_bars_exit`.
+
+### Strategy configuration visibility
+- Strategy parameters are typed and persisted under the top-level `strategies` section in `/config`.
+- `/strategies` reports enabled status plus per-strategy config/state snapshots for dashboard diagnostics.
+
 ## API highlights
 - `/health` includes readiness snapshot (DB, replay, mode, config loaded).
 - `/config` returns/updates persisted runtime config.

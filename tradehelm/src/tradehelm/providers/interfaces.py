@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Iterable
 
-from tradehelm.trading_engine.types import Bar, OrderSide, OrderType
+from tradehelm.trading_engine.types import Bar, OrderSide, OrderType, StrategyIntent
 
 
 class BrokerProvider(ABC):
@@ -41,8 +41,12 @@ class Strategy(ABC):
     strategy_id: str
 
     @abstractmethod
-    def on_bar(self, bar: Bar) -> list[dict]:
-        """Return list of intent dicts with symbol/side/qty and optional limit_price."""
+    def on_bar(self, bar: Bar) -> list[StrategyIntent]:
+        """Return list of typed strategy intents for this bar."""
+
+    def status(self) -> dict:
+        """Optional strategy-level diagnostics for API/dashboard."""
+        return {}
 
 
 class CostModelProvider(ABC):
