@@ -44,6 +44,18 @@ class Strategy(ABC):
     def on_bar(self, bar: Bar) -> list[StrategyIntent]:
         """Return list of typed strategy intents for this bar."""
 
+    def on_entry_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+        """Called when an entry intent has been accepted/submitted by engine."""
+
+    def on_exit_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+        """Called when an exit intent has been accepted/submitted by engine."""
+
+    def on_entry_rejected(self, intent: StrategyIntent, bar: Bar, reason: str) -> None:
+        """Called when an entry intent is rejected/suppressed by engine."""
+
+    def on_exit_rejected(self, intent: StrategyIntent, bar: Bar, reason: str) -> None:
+        """Called when an exit intent is rejected/suppressed by engine."""
+
     def status(self) -> dict:
         """Optional strategy-level diagnostics for API/dashboard."""
         return {}

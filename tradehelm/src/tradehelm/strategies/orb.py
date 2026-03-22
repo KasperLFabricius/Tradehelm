@@ -26,7 +26,7 @@ class OrbSymbolState:
 
 
 class OpeningRangeBreakoutStrategy(Strategy):
-    """Opening range breakout with one entry/session and deterministic exits."""
+    """Opening range breakout with one accepted entry/session and deterministic exits."""
 
     strategy_id = "orb"
 
@@ -82,26 +82,18 @@ class OpeningRangeBreakoutStrategy(Strategy):
                 exit_side = OrderSide.SELL if st.position_side == OrderSide.BUY else OrderSide.BUY
                 intents.append(StrategyIntent(bar.symbol, exit_side, self.config.qty, StrategyAction.EXIT, self.strategy_id, reason="orb_session_flatten"))
 
-            if intents:
-                st.position_side = None
-                st.entry_price = None
-                st.entry_bar_index = None
-                return intents
+            return intents
 
         rng = opening_range(st.history, self.config.opening_range_bars)
         if rng is None:
             return []
         st.opening_high, st.opening_low = rng
-        if st.breakout_fired or st.position_side is not None:
+        if st.breakout_fired:
             return []
 
         up_level = st.opening_high + self.config.breakout_buffer
         dn_level = st.opening_low - self.config.breakout_buffer
         if bar.close >= up_level and self._in_direction(OrderSide.BUY):
-            st.breakout_fired = True
-            st.position_side = OrderSide.BUY
-            st.entry_price = bar.close
-            st.entry_bar_index = idx
             return [
                 StrategyIntent(
                     symbol=bar.symbol,
@@ -114,10 +106,6 @@ class OpeningRangeBreakoutStrategy(Strategy):
                 )
             ]
         if bar.close <= dn_level and self._in_direction(OrderSide.SELL):
-            st.breakout_fired = True
-            st.position_side = OrderSide.SELL
-            st.entry_price = bar.close
-            st.entry_bar_index = idx
             return [
                 StrategyIntent(
                     symbol=bar.symbol,
@@ -130,6 +118,19 @@ class OpeningRangeBreakoutStrategy(Strategy):
                 )
             ]
         return []
+
+    def on_entry_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+        st = self._state_for(intent.symbol)
+        st.breakout_fired = True
+        st.position_side = intent.side
+        st.entry_price = bar.close
+        st.entry_bar_index = len(st.history) - 1
+
+    def on_exit_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+        st = self._state_for(intent.symbol)
+        st.position_side = None
+        st.entry_price = None
+        st.entry_bar_index = None
 
     def status(self) -> dict:
         tracked = {sym: {"session_day": st.session_day, "breakout_fired": st.breakout_fired, "in_position": st.position_side is not None} for sym, st in self._state.items()}

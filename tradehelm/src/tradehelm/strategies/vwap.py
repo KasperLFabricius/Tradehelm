@@ -79,9 +79,6 @@ class VwapContinuationStrategy(Strategy):
                     side, reason = OrderSide.BUY, "vwap_max_bars_exit"
                 else:
                     return []
-            st.position_side = None
-            st.entry_price = None
-            st.entry_bar_index = None
             return [StrategyIntent(bar.symbol, side, self.config.qty, StrategyAction.EXIT, self.strategy_id, reason=reason)]
 
         prev = st.history[-2]
@@ -95,20 +92,26 @@ class VwapContinuationStrategy(Strategy):
             st.pulled_back_short = True
 
         if st.pulled_back_long and now_above and pullback >= self.config.reentry_buffer and self._dir_ok(OrderSide.BUY):
-            st.pulled_back_long = False
-            st.position_side = OrderSide.BUY
-            st.entry_price = bar.close
-            st.entry_bar_index = idx
             return [StrategyIntent(bar.symbol, OrderSide.BUY, self.config.qty, StrategyAction.ENTRY, self.strategy_id, reason="vwap_pullback_entry", metadata={"vwap": round(vwap, 4)})]
 
         if st.pulled_back_short and (not now_above) and pullback >= self.config.reentry_buffer and self._dir_ok(OrderSide.SELL):
-            st.pulled_back_short = False
-            st.position_side = OrderSide.SELL
-            st.entry_price = bar.close
-            st.entry_bar_index = idx
             return [StrategyIntent(bar.symbol, OrderSide.SELL, self.config.qty, StrategyAction.ENTRY, self.strategy_id, reason="vwap_pullback_entry", metadata={"vwap": round(vwap, 4)})]
 
         return []
+
+    def on_entry_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+        st = self._state_for(intent.symbol)
+        st.position_side = intent.side
+        st.entry_price = bar.close
+        st.entry_bar_index = len(st.history) - 1
+        st.pulled_back_long = False
+        st.pulled_back_short = False
+
+    def on_exit_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+        st = self._state_for(intent.symbol)
+        st.position_side = None
+        st.entry_price = None
+        st.entry_bar_index = None
 
     def status(self) -> dict:
         tracked = {sym: {"session_day": st.session_day, "in_position": st.position_side is not None} for sym, st in self._state.items()}

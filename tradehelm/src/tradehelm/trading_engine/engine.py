@@ -349,6 +349,11 @@ class TradingEngine:
             metadata=dict(intent.get("metadata", {})),
         )
 
+    def _notify_strategy(self, strategy: Strategy, hook: str, *args) -> None:
+        fn = getattr(strategy, hook, None)
+        if callable(fn):
+            fn(*args)
+
     def _trade_bar(self, bar: Bar) -> None:
         day_unrealized_pnl = self.unrealized_pnl()
         daily_pnl = self.day_realized_pnl + day_unrealized_pnl
@@ -364,16 +369,22 @@ class TradingEngine:
                 sig = (intent.strategy_id, intent.symbol, intent.action.value, intent.side.value, intent.qty)
                 if sig in submitted_signatures:
                     self._record_decision(intent, accepted=False, reason="duplicate_intent_suppressed")
+                    if intent.action == StrategyAction.ENTRY:
+                        self._notify_strategy(ss.strategy, "on_entry_rejected", intent, bar, "duplicate_intent_suppressed")
+                    else:
+                        self._notify_strategy(ss.strategy, "on_exit_rejected", intent, bar, "duplicate_intent_suppressed")
                     continue
                 submitted_signatures.add(sig)
 
                 if intent.action == StrategyAction.ENTRY and self._open_qty(intent.symbol) != 0:
                     self._record_decision(intent, accepted=False, reason="entry_suppressed_existing_position")
+                    self._notify_strategy(ss.strategy, "on_entry_rejected", intent, bar, "entry_suppressed_existing_position")
                     continue
 
                 if intent.action == StrategyAction.EXIT:
                     if self._open_qty(intent.symbol) == 0:
                         self._record_decision(intent, accepted=False, reason="exit_rejected_no_position")
+                        self._notify_strategy(ss.strategy, "on_exit_rejected", intent, bar, "exit_rejected_no_position")
                         continue
                     order_id = self.broker.submit_order(
                         symbol=intent.symbol,
@@ -382,6 +393,7 @@ class TradingEngine:
                         order_type=OrderType.MARKET,
                     )
                     self._record_decision(intent, accepted=True, reason=intent.reason or f"exit_accepted order={order_id}")
+                    self._notify_strategy(ss.strategy, "on_exit_accepted", intent, bar)
                     continue
 
                 est_cost = self.cost_model.estimate_round_trip_cost(bar.close, intent.qty)
@@ -391,6 +403,7 @@ class TradingEngine:
                 ok, reason = self.risk.validate(intent.symbol, intent.qty, bar.close, net_edge, daily_pnl, len(projected_open_symbols))
                 if not ok:
                     self._record_decision(intent, accepted=False, reason=reason)
+                    self._notify_strategy(ss.strategy, "on_entry_rejected", intent, bar, reason)
                     self.log("WARN", "risk_reject", reason)
                     continue
 
@@ -402,6 +415,7 @@ class TradingEngine:
                 )
                 accept_reason = intent.reason or f"entry_accepted order={order_id}"
                 self._record_decision(intent, accepted=True, reason=accept_reason)
+                self._notify_strategy(ss.strategy, "on_entry_accepted", intent, bar)
                 self.risk.trades_today += 1
                 if opening_new_symbol:
                     projected_open_symbols.add(intent.symbol)

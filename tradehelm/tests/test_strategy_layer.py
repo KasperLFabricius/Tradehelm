@@ -2,25 +2,47 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from tradehelm.config.models import AppConfig, OrbStrategyConfig, VwapStrategyConfig
-from tradehelm.persistence.db import DecisionRecord, OrderRecord, create_session_factory
+from tradehelm.config.models import AppConfig, OrbStrategyConfig, RiskConfig, VwapStrategyConfig
+from tradehelm.persistence.db import DecisionRecord, OrderRecord, PositionRecord, create_session_factory
 from tradehelm.strategies.orb import OpeningRangeBreakoutStrategy
 from tradehelm.strategies.vwap import VwapContinuationStrategy
 from tradehelm.trading_engine.engine import TradingEngine
-from tradehelm.trading_engine.types import Bar, OrderSide, StrategyAction, StrategyIntent
+from tradehelm.trading_engine.types import Bar, OrderSide, OrderType, StrategyAction, StrategyIntent
 
 
 def _bar(ts: datetime, close: float, symbol: str = "AAA") -> Bar:
     return Bar(ts=ts, symbol=symbol, open=close, high=close + 0.05, low=close - 0.05, close=close, volume=100)
 
 
+def _orb_entry_sequence(strategy: OpeningRangeBreakoutStrategy, ts: datetime) -> StrategyIntent:
+    strategy.on_bar(_bar(ts, 100))
+    strategy.on_bar(_bar(ts + timedelta(minutes=1), 100))
+    intents = strategy.on_bar(_bar(ts + timedelta(minutes=2), 101))
+    assert intents and intents[0].action == StrategyAction.ENTRY
+    return intents[0]
+
+
+def _vwap_entry_sequence(strategy: VwapContinuationStrategy, ts: datetime) -> StrategyIntent:
+    for price, i in [(100, 0), (100.2, 1), (100.4, 2)]:
+        assert strategy.on_bar(_bar(ts + timedelta(minutes=i), price)) == []
+    pullback = Bar(ts + timedelta(minutes=3), "AAA", 100.3, 100.35, 100.1, 100.2, 100)
+    assert strategy.on_bar(pullback) == []
+    entry_bar = Bar(ts + timedelta(minutes=4), "AAA", 100.35, 100.45, 100.3, 100.4, 100)
+    intents = strategy.on_bar(entry_bar)
+    assert intents and intents[0].reason == "vwap_pullback_entry"
+    return intents[0]
+
+
 def test_orb_no_duplicate_entries_after_breakout():
     cfg = OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, qty=1)
     s = OpeningRangeBreakoutStrategy(cfg)
     t0 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
-    bars = [_bar(t0, 100), _bar(t0 + timedelta(minutes=1), 100.1), _bar(t0 + timedelta(minutes=2), 101), _bar(t0 + timedelta(minutes=3), 101.2)]
-    intents = [i for b in bars for i in s.on_bar(b)]
-    assert len([i for i in intents if i.action == StrategyAction.ENTRY]) == 1
+    entry = _orb_entry_sequence(s, t0)
+
+    assert not s.status()["tracked_symbols"]["AAA"]["in_position"]
+    s.on_entry_accepted(entry, _bar(t0 + timedelta(minutes=2), 101))
+    intents = s.on_bar(_bar(t0 + timedelta(minutes=3), 101.2))
+    assert len([i for i in intents if i.action == StrategyAction.ENTRY]) == 0
 
 
 def test_orb_direction_control():
@@ -43,25 +65,22 @@ def test_orb_exits_stop_target_and_max_bars():
     t0 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
 
     stop_s = OpeningRangeBreakoutStrategy(OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, stop_loss=0.2, take_profit=2, max_bars_in_trade=5, qty=1))
-    stop_s.on_bar(_bar(t0, 100))
-    stop_s.on_bar(_bar(t0 + timedelta(minutes=1), 100))
-    stop_s.on_bar(_bar(t0 + timedelta(minutes=2), 101))
+    stop_intent = _orb_entry_sequence(stop_s, t0)
+    stop_s.on_entry_accepted(stop_intent, _bar(t0 + timedelta(minutes=2), 101))
     stop_bar = Bar(t0 + timedelta(minutes=3), "AAA", 100.9, 101.0, 100.6, 100.8, 100)
     stop_intents = stop_s.on_bar(stop_bar)
     assert stop_intents and stop_intents[0].reason == "orb_stop_exit"
 
     target_s = OpeningRangeBreakoutStrategy(OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, stop_loss=2, take_profit=0.2, max_bars_in_trade=5, qty=1))
-    target_s.on_bar(_bar(t0, 100))
-    target_s.on_bar(_bar(t0 + timedelta(minutes=1), 100))
-    target_s.on_bar(_bar(t0 + timedelta(minutes=2), 101))
+    target_intent = _orb_entry_sequence(target_s, t0)
+    target_s.on_entry_accepted(target_intent, _bar(t0 + timedelta(minutes=2), 101))
     target_bar = Bar(t0 + timedelta(minutes=3), "AAA", 101.1, 101.3, 101.0, 101.2, 100)
     target_intents = target_s.on_bar(target_bar)
     assert target_intents and target_intents[0].reason == "orb_target_exit"
 
     max_s = OpeningRangeBreakoutStrategy(OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, stop_loss=2, take_profit=2, max_bars_in_trade=1, qty=1))
-    max_s.on_bar(_bar(t0, 100))
-    max_s.on_bar(_bar(t0 + timedelta(minutes=1), 100))
-    max_s.on_bar(_bar(t0 + timedelta(minutes=2), 101))
+    max_intent = _orb_entry_sequence(max_s, t0)
+    max_s.on_entry_accepted(max_intent, _bar(t0 + timedelta(minutes=2), 101))
     max_intents = max_s.on_bar(_bar(t0 + timedelta(minutes=3), 101.05))
     assert max_intents and max_intents[0].reason == "orb_max_bars_exit"
 
@@ -71,9 +90,8 @@ def test_strategy_state_resets_new_session():
     d1 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
     d2 = datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc)
 
-    s.on_bar(_bar(d1, 100))
-    s.on_bar(_bar(d1 + timedelta(minutes=1), 100))
-    assert s.on_bar(_bar(d1 + timedelta(minutes=2), 101))
+    d1_entry = _orb_entry_sequence(s, d1)
+    s.on_entry_accepted(d1_entry, _bar(d1 + timedelta(minutes=2), 101))
 
     assert s.on_bar(_bar(d2, 100)) == []
     assert s.on_bar(_bar(d2 + timedelta(minutes=1), 100)) == []
@@ -84,14 +102,7 @@ def test_strategy_state_resets_new_session():
 def test_vwap_continuation_entry_sequence():
     s = VwapContinuationStrategy(VwapStrategyConfig(pullback_threshold=0.08, reentry_buffer=0.05, qty=1))
     t0 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
-    bars = [_bar(t0, 100), _bar(t0 + timedelta(minutes=1), 100.2), _bar(t0 + timedelta(minutes=2), 100.4)]
-    for b in bars:
-        assert s.on_bar(b) == []
-    pullback = Bar(t0 + timedelta(minutes=3), "AAA", 100.3, 100.35, 100.1, 100.2, 100)
-    assert s.on_bar(pullback) == []
-    entry_bar = Bar(t0 + timedelta(minutes=4), "AAA", 100.35, 100.45, 100.3, 100.4, 100)
-    intents = s.on_bar(entry_bar)
-    assert intents and intents[0].reason == "vwap_pullback_entry"
+    _vwap_entry_sequence(s, t0)
 
 
 def test_engine_handles_typed_intents_and_reasons_persisted():
@@ -106,8 +117,12 @@ def test_engine_handles_typed_intents_and_reasons_persisted():
         def status(self) -> dict:
             return {}
 
+        def on_entry_accepted(self, intent: StrategyIntent, bar: Bar) -> None:
+            self.accepted = True
+
     sf = create_session_factory("sqlite:///:memory:")
-    engine = TradingEngine(sf, AppConfig(), [TypedIntentStrategy()])
+    strategy = TypedIntentStrategy()
+    engine = TradingEngine(sf, AppConfig(), [strategy])
     ts = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
     engine._roll_day_if_needed(ts)
     engine._trade_bar(_bar(ts, 100))
@@ -117,3 +132,80 @@ def test_engine_handles_typed_intents_and_reasons_persisted():
         decisions = s.scalars(select(DecisionRecord)).all()
         assert len(orders) == 1
         assert decisions[0].reason == "typed_entry"
+    assert getattr(strategy, "accepted", False) is True
+
+
+def test_orb_rejected_entry_does_not_mark_in_position_state():
+    sf = create_session_factory("sqlite:///:memory:")
+    cfg = AppConfig(risk=RiskConfig(max_trades_per_day=0))
+    strategy = OpeningRangeBreakoutStrategy(OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, qty=1))
+    engine = TradingEngine(sf, cfg, [strategy])
+
+    t0 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
+    for close, minute in [(100, 0), (100, 1), (101, 2)]:
+        ts = t0 + timedelta(minutes=minute)
+        engine._roll_day_if_needed(ts)
+        engine._trade_bar(_bar(ts, close))
+
+    st = strategy.status()["tracked_symbols"]["AAA"]
+    assert st["in_position"] is False
+    assert st["breakout_fired"] is False
+
+
+def test_vwap_rejected_entry_does_not_mark_in_position_state():
+    sf = create_session_factory("sqlite:///:memory:")
+    cfg = AppConfig(risk=RiskConfig(max_trades_per_day=0))
+    strategy = VwapContinuationStrategy(VwapStrategyConfig(qty=1, pullback_threshold=0.08, reentry_buffer=0.05))
+    engine = TradingEngine(sf, cfg, [strategy])
+
+    t0 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
+    for close, minute in [(100, 0), (100.2, 1), (100.4, 2), (100.2, 3), (100.4, 4)]:
+        ts = t0 + timedelta(minutes=minute)
+        engine._roll_day_if_needed(ts)
+        engine._trade_bar(_bar(ts, close))
+
+    st = strategy.status()["tracked_symbols"]["AAA"]
+    assert st["in_position"] is False
+
+
+def test_accepted_entry_then_exit_updates_strategy_position_state():
+    sf = create_session_factory("sqlite:///:memory:")
+    orb = OpeningRangeBreakoutStrategy(OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, qty=1, take_profit=0.2, stop_loss=2))
+    engine = TradingEngine(sf, AppConfig(), [orb])
+
+    t0 = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
+    for close, minute in [(100, 0), (100, 1), (101, 2)]:
+        ts = t0 + timedelta(minutes=minute)
+        engine._roll_day_if_needed(ts)
+        engine._trade_bar(_bar(ts, close))
+    assert orb.status()["tracked_symbols"]["AAA"]["in_position"] is True
+
+    ts_exit = t0 + timedelta(minutes=3)
+    exit_bar = Bar(ts_exit, "AAA", 101.1, 101.3, 101.0, 101.2, 100)
+    engine._roll_day_if_needed(ts_exit)
+    engine.broker.on_bar(exit_bar)
+    engine._trade_bar(exit_bar)
+    assert orb.status()["tracked_symbols"]["AAA"]["in_position"] is False
+
+
+def test_entry_suppressed_existing_position_keeps_strategy_flat():
+    sf = create_session_factory("sqlite:///:memory:")
+    orb = OpeningRangeBreakoutStrategy(OrbStrategyConfig(opening_range_bars=2, breakout_buffer=0.0, qty=1))
+    engine = TradingEngine(sf, AppConfig(), [orb])
+
+    ts = datetime(2026, 1, 1, 14, 30, tzinfo=timezone.utc)
+    engine.broker.submit_order("AAA", OrderSide.BUY, 1, OrderType.MARKET)
+    engine.broker.on_bar(_bar(ts, 100))
+
+    for close, minute in [(100, 0), (100, 1), (101, 2)]:
+        t = ts + timedelta(minutes=minute)
+        engine._roll_day_if_needed(t)
+        engine._trade_bar(_bar(t, close))
+
+    status = orb.status()["tracked_symbols"]["AAA"]
+    assert status["in_position"] is False
+    assert status["breakout_fired"] is False
+
+    with sf() as s:
+        position = s.get(PositionRecord, "AAA")
+        assert position is not None and position.qty != 0
