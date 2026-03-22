@@ -7,7 +7,7 @@ TradeHelm v1 is a local-first, broker-agnostic, human-supervised intraday tradin
 - Supports bot modes: `STOPPED`, `OBSERVE`, `PAPER`, `HALTED`, `KILL_SWITCH`.
 - Replays local intraday CSV bars in a background worker thread (non-blocking control API).
 - Executes simulated market/limit orders through a paper broker with partial fills.
-- Applies configurable friction (commission/minimum, spread, slippage, tick-size rounding).
+- Applies configurable friction with explicit commission fees and implicit spread/slippage price impact (plus tick-size rounding).
 - Persists operational records (orders, fills, positions, closed trades, state transitions, logs, replay sessions).
 - Includes extension interfaces/stubs for future broker/news/AI modules.
 
@@ -71,6 +71,12 @@ streamlit run src/tradehelm/dashboard/app.py
 - cost model for subsequent fills and risk edge estimates
 
 Existing persisted orders/fills/positions are not wiped by config changes.
+
+
+### Friction accounting model
+- Commission is charged as explicit `fee` on fills.
+- Spread/slippage are modeled as implicit execution-price impact via adjusted fill prices.
+- Trade-evaluation round-trip estimates include both explicit commission and implicit impact.
 
 ## Known simulator limitations
 - Partial-fill model is intentionally simple.

@@ -87,7 +87,7 @@ class PaperBroker(BrokerProvider):
                 remaining = order.qty - order.filled_qty
                 fill_qty = max(1, remaining // 2) if remaining > 1 else remaining
                 fill_px = self._fill_price(order, bar)
-                fee = self.cost_model.estimate_one_way_cost(fill_px, fill_qty)
+                fee = self.cost_model.estimate_one_way_explicit_cost(fill_px, fill_qty)
                 s.add(FillRecord(order_id=order.id, symbol=order.symbol, side=order.side, qty=fill_qty, price=fill_px, fee=fee, ts=bar.ts))
                 order.filled_qty += fill_qty
                 order.status = OrderStatus.FILLED.value if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED.value
@@ -104,7 +104,7 @@ class PaperBroker(BrokerProvider):
             side = OrderSide.SELL if position.qty > 0 else OrderSide.BUY
             ref_px = reference_price if reference_price is not None else position.last_price
             fill_px = self.cost_model.adjusted_fill_price(ref_px, side)
-            fee = self.cost_model.estimate_one_way_cost(fill_px, qty)
+            fee = self.cost_model.estimate_one_way_explicit_cost(fill_px, qty)
             synthetic_id = f"kill-{uuid4()}"
             s.add(FillRecord(order_id=synthetic_id, symbol=symbol, side=side.value, qty=qty, price=fill_px, fee=fee, ts=ts))
             self._apply_fill(s, symbol, side, qty, fill_px, fee)

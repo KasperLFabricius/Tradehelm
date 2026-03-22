@@ -55,3 +55,25 @@ def test_reversal_sets_new_avg_entry_for_residual_position():
         assert pos is not None
         assert pos.qty < 0
         assert pos.avg_entry == pos.last_price
+
+
+def test_fill_fee_is_commission_only_no_spread_slippage_double_count():
+    cfg = FrictionConfig(
+        commission_fixed=0.0,
+        commission_rate=0.001,
+        minimum_commission=0.0,
+        assumed_spread_bps=20.0,
+        assumed_slippage_bps=20.0,
+    )
+    model = GenericCostModel(cfg)
+    sf = create_session_factory("sqlite:///:memory:")
+    broker = PaperBroker(sf, model)
+    oid = broker.submit_order("DEMO", OrderSide.BUY, 1, OrderType.MARKET)
+    bar = Bar(ts=datetime.utcnow(), symbol="DEMO", open=100, high=100, low=100, close=100, volume=1)
+    broker.on_bar(bar)
+
+    with sf() as s:
+        fill = s.query(FillRecord).filter(FillRecord.order_id == oid).first()
+        assert fill is not None
+        assert fill.price > 100  # implicit impact in execution price
+        assert fill.fee == model.estimate_commission(fill.price, 1)
