@@ -1,9 +1,9 @@
 """Database setup and SQLAlchemy models."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String, create_engine
+from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -78,6 +78,21 @@ class ReplaySessionRecord(Base):
     dataset: Mapped[str] = mapped_column(String(255))
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String(32), default="LOADED")
+
+
+class AppConfigRecord(Base):
+    __tablename__ = "app_config"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    version: Mapped[str] = mapped_column(String(32), default="v1")
+    payload_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class RuntimeMetadataRecord(Base):
+    __tablename__ = "runtime_metadata"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    payload_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 def create_session_factory(db_url: str = "sqlite:///tradehelm.db") -> sessionmaker:

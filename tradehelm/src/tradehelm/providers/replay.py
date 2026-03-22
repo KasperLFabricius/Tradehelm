@@ -9,6 +9,9 @@ from tradehelm.providers.interfaces import MarketDataProvider
 from tradehelm.trading_engine.types import Bar
 
 
+REQUIRED_COLUMNS = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+
+
 class ReplayMarketDataProvider(MarketDataProvider):
     """Loads OHLCV CSV and yields bars sorted by timestamp."""
 
@@ -18,6 +21,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
 
     def load(self, path: str) -> None:
         df = pd.read_csv(path)
+        missing = REQUIRED_COLUMNS - set(df.columns)
+        if missing:
+            raise ValueError(f"Missing required columns: {sorted(missing)}")
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         self._df = df.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
 

@@ -1,71 +1,116 @@
 """Streamlit operator dashboard for TradeHelm."""
 from __future__ import annotations
 
-import requests
 import streamlit as st
 
-API = st.sidebar.text_input("Control API URL", value="http://127.0.0.1:8000")
+from tradehelm.dashboard.client import ApiResult, call_api
 
-st.title("TradeHelm Dashboard")
-
-
-def get(path: str):
-    return requests.get(f"{API}{path}", timeout=10).json()
+DEFAULT_API = "http://127.0.0.1:8000"
 
 
-def post(path: str, payload: dict | None = None):
-    return requests.post(f"{API}{path}", json=payload or {}, timeout=30).json()
+def notify_action(result: ApiResult, ok_msg: str) -> None:
+    if result.ok:
+        st.success(ok_msg)
+    else:
+        st.error(result.error or "Action failed")
 
 
-state = get("/state")
-st.header("Command Center")
-st.metric("Mode", state.get("mode", "UNKNOWN"))
-st.metric("Replay Running", str(state.get("replay_running", False)))
-st.metric("Replay Stop Requested", str(state.get("replay_stop_requested", False)))
-st.caption(f"Replay Path: {state.get('replay_path')}")
-st.caption(f"Started: {state.get('replay_started_at')}")
-st.caption(f"Completed: {state.get('replay_completed_at')}")
-st.json(state)
+def render_live_status(api: str) -> None:
+    health = call_api(api, "GET", "/health")
+    state = call_api(api, "GET", "/state")
 
-mode = st.selectbox("Bot Mode", ["STOPPED", "OBSERVE", "PAPER", "HALTED", "KILL_SWITCH"])
-if st.button("Switch mode"):
-    st.write(post("/state/mode", {"mode": mode}))
+    if not health.ok or not state.ok:
+        st.error((health.error or "") + " " + (state.error or ""))
+        return
 
-col1, col2, col3 = st.columns(3)
-if col1.button("Halt"):
-    st.write(post("/state/halt"))
-if col2.button("Kill Switch"):
-    st.write(post("/state/kill"))
-if col3.button("Reset STOPPED"):
-    st.write(post("/state/mode", {"mode": "STOPPED"}))
+    health_payload = health.payload or {}
+    state_payload = state.payload or {}
+    readiness = health_payload.get("readiness", {})
 
-st.subheader("Replay")
-replay_path = st.text_input("Replay CSV path", value="sample_data/demo_intraday.csv")
-if st.button("Load replay"):
-    st.write(post("/replay/load", {"path": replay_path}))
-if st.button("Start replay"):
-    st.write(post("/replay/start"))
-if st.button("Stop replay"):
-    st.write(post("/replay/stop"))
+    st.header("Command Center")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mode", state_payload.get("mode", "UNKNOWN"))
+    c2.metric("Replay Loaded", str(readiness.get("replay_loaded", False)))
+    c3.metric("Replay Running", str(readiness.get("replay_running", False)))
+    c4.metric("DB Reachable", str(readiness.get("db_reachable", False)))
 
-st.header("Strategies")
-for item in get("/strategies"):
-    c1, c2, c3 = st.columns([2, 1, 1])
-    c1.write(item)
-    if c2.button(f"Enable {item['strategy_id']}"):
-        st.write(post(f"/strategies/{item['strategy_id']}/enable"))
-    if c3.button(f"Disable {item['strategy_id']}"):
-        st.write(post(f"/strategies/{item['strategy_id']}/disable"))
+    st.caption(f"Replay Path: {state_payload.get('replay_path')}")
+    st.caption(f"Started: {state_payload.get('replay_started_at')} | Completed: {state_payload.get('replay_completed_at')}")
 
-st.header("Orders and Fills")
-st.dataframe(get("/orders"))
-st.dataframe(get("/fills"))
 
-st.header("Positions")
-st.dataframe(get("/positions"))
+def render() -> None:
+    st.title("TradeHelm Dashboard")
 
-st.header("Risk")
-st.json(get("/config").get("risk", {}))
+    if "api_url" not in st.session_state:
+        st.session_state.api_url = DEFAULT_API
+    if "refresh_seconds" not in st.session_state:
+        st.session_state.refresh_seconds = 2
+    if "auto_refresh" not in st.session_state:
+        st.session_state.auto_refresh = True
 
-st.header("Logs")
-st.dataframe(get("/logs"))
+    st.sidebar.text_input("Control API URL", key="api_url")
+    st.sidebar.checkbox("Auto refresh", key="auto_refresh")
+    st.sidebar.slider("Refresh interval (seconds)", 1, 10, key="refresh_seconds")
+
+    api = st.session_state.api_url
+
+    if st.session_state.auto_refresh and hasattr(st, "fragment"):
+        @st.fragment(run_every=f"{st.session_state.refresh_seconds}s")
+        def live_fragment() -> None:
+            render_live_status(api)
+
+        live_fragment()
+    else:
+        if st.button("Refresh now"):
+            st.rerun()
+        render_live_status(api)
+
+    st.subheader("Operator Controls")
+    mode = st.selectbox("Mode", ["STOPPED", "OBSERVE", "PAPER", "HALTED"], index=0)
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Apply Mode"):
+        notify_action(call_api(api, "POST", "/state/mode", {"mode": mode}), f"Mode set to {mode}.")
+    if c2.button("Halt"):
+        notify_action(call_api(api, "POST", "/state/halt"), "Bot HALTED.")
+    kill_confirm = c3.checkbox("Confirm kill switch")
+    if c3.button("Kill Switch", disabled=not kill_confirm):
+        notify_action(call_api(api, "POST", "/state/kill"), "Kill switch engaged.")
+
+    st.subheader("Replay")
+    replay_path = st.text_input("Replay CSV path", value="sample_data/demo_intraday.csv")
+    r1, r2, r3 = st.columns(3)
+    if r1.button("Load Replay"):
+        notify_action(call_api(api, "POST", "/replay/load", {"path": replay_path}), "Replay dataset loaded.")
+    if r2.button("Start Replay"):
+        notify_action(call_api(api, "POST", "/replay/start"), "Replay started.")
+    if r3.button("Stop Replay"):
+        notify_action(call_api(api, "POST", "/replay/stop"), "Replay stop requested.")
+
+    st.subheader("Strategies")
+    strategies = call_api(api, "GET", "/strategies")
+    if strategies.ok:
+        for item in strategies.payload or []:
+            c1, c2, c3 = st.columns([2, 1, 1])
+            c1.write(item)
+            sid = item["strategy_id"]
+            if c2.button(f"Enable {sid}"):
+                notify_action(call_api(api, "POST", f"/strategies/{sid}/enable"), f"{sid} enabled.")
+            if c3.button(f"Disable {sid}"):
+                notify_action(call_api(api, "POST", f"/strategies/{sid}/disable"), f"{sid} disabled.")
+    else:
+        st.error(strategies.error)
+
+    st.subheader("Positions / Orders / Fills")
+    st.dataframe(call_api(api, "GET", "/positions").payload or [])
+    st.dataframe(call_api(api, "GET", "/orders").payload or [])
+    st.dataframe(call_api(api, "GET", "/fills").payload or [])
+
+    st.subheader("Config / Risk")
+    cfg = call_api(api, "GET", "/config")
+    st.json((cfg.payload or {}).get("risk", {}))
+
+    st.subheader("Logs")
+    st.dataframe(call_api(api, "GET", "/logs").payload or [])
+
+
+render()
