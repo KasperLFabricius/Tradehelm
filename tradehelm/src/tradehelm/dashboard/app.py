@@ -55,6 +55,7 @@ def render() -> None:
     api = st.session_state.api_url
 
     if st.session_state.auto_refresh and hasattr(st, "fragment"):
+
         @st.fragment(run_every=f"{st.session_state.refresh_seconds}s")
         def live_fragment() -> None:
             render_live_status(api)
@@ -104,6 +105,40 @@ def render() -> None:
     st.dataframe(call_api(api, "GET", "/positions").payload or [])
     st.dataframe(call_api(api, "GET", "/orders").payload or [])
     st.dataframe(call_api(api, "GET", "/fills").payload or [])
+
+    st.subheader("Replay Review & Analytics")
+    summary = call_api(api, "GET", "/analytics/summary")
+    fees = call_api(api, "GET", "/analytics/fees")
+    sessions = call_api(api, "GET", "/analytics/sessions")
+    trades = call_api(api, "GET", "/analytics/trades")
+    decisions = call_api(api, "GET", "/analytics/decisions")
+
+    if summary.ok and isinstance(summary.payload, dict):
+        s = summary.payload
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Closed Trades", s.get("total_closed_trades", 0))
+        m2.metric("Win Rate", f"{100 * float(s.get('win_rate', 0.0)):.1f}%")
+        m3.metric("Net PnL", round(float(s.get("net_realized_pnl", 0.0)), 2))
+        m4.metric("Gross PnL", round(float(s.get("gross_realized_pnl", 0.0)), 2))
+    else:
+        st.warning(summary.error or "Summary unavailable")
+
+    st.write("Fees")
+    st.json(fees.payload if fees.ok else {"error": fees.error})
+
+    st.write("Replay Sessions")
+    st.dataframe(sessions.payload or [])
+
+    st.write("Closed Trades Journal")
+    st.dataframe(trades.payload or [])
+
+    st.write("Decision Audit Trail")
+    st.dataframe(decisions.payload or [])
+
+    st.caption("Reset clears simulated analytics records only. Config/runtime metadata remain.")
+    if st.checkbox("Confirm analytics reset"):
+        if st.button("Reset Analytics Records"):
+            notify_action(call_api(api, "POST", "/analytics/reset", {"confirm": True}), "Analytics records cleared.")
 
     st.subheader("Config / Risk")
     cfg = call_api(api, "GET", "/config")

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
@@ -35,6 +35,10 @@ class ReplayLoadRequest(BaseModel):
 
 class ApiError(BaseModel):
     error: dict[str, str]
+
+
+class ResetRequest(BaseModel):
+    confirm: bool = False
 
 
 def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEngine:
@@ -161,6 +165,32 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
     def replay_stop() -> dict:
         engine.set_mode(BotMode.STOPPED, reason="replay_stop")
         return engine.stop_replay()
+
+    @app.get("/analytics/summary")
+    def analytics_summary() -> dict:
+        return engine.analytics.summary()
+
+    @app.get("/analytics/trades")
+    def analytics_trades() -> list[dict]:
+        return engine.analytics.trades()
+
+    @app.get("/analytics/sessions")
+    def analytics_sessions() -> list[dict]:
+        return engine.analytics.sessions()
+
+    @app.get("/analytics/fees")
+    def analytics_fees() -> dict:
+        return engine.analytics.fees()
+
+    @app.get("/analytics/decisions")
+    def analytics_decisions() -> list[dict]:
+        return engine.decisions()
+
+    @app.post("/analytics/reset")
+    def analytics_reset(req: ResetRequest) -> dict:
+        if not req.confirm:
+            raise HTTPException(status_code=400, detail="Reset requires confirm=true")
+        return {"cleared": engine.reset_paper_records()}
 
     return app
 

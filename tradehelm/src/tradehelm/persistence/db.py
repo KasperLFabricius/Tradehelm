@@ -28,6 +28,19 @@ class EventLog(Base):
     message: Mapped[str] = mapped_column(String(500))
 
 
+class DecisionRecord(Base):
+    __tablename__ = "decisions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    strategy_id: Mapped[str] = mapped_column(String(64))
+    symbol: Mapped[str] = mapped_column(String(16))
+    side: Mapped[str] = mapped_column(String(8))
+    qty: Mapped[int] = mapped_column(Integer)
+    accepted: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    mode: Mapped[str] = mapped_column(String(32), default="PAPER")
+
+
 class OrderRecord(Base):
     __tablename__ = "orders"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -60,15 +73,23 @@ class PositionRecord(Base):
     avg_entry: Mapped[float] = mapped_column(Float)
     last_price: Mapped[float] = mapped_column(Float, default=0.0)
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cumulative_fees: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class ClosedTradeRecord(Base):
     __tablename__ = "closed_trades"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(16))
+    side: Mapped[str] = mapped_column(String(8), default="LONG")
     entry_price: Mapped[float] = mapped_column(Float)
     exit_price: Mapped[float] = mapped_column(Float)
     qty: Mapped[int] = mapped_column(Integer)
+    entry_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exit_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    gross_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    fees: Mapped[float] = mapped_column(Float, default=0.0)
+    net_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     pnl: Mapped[float] = mapped_column(Float)
 
 
@@ -76,7 +97,9 @@ class ReplaySessionRecord(Base):
     __tablename__ = "replay_sessions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dataset: Mapped[str] = mapped_column(String(255))
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    loaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="LOADED")
 
 

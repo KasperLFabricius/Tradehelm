@@ -91,7 +91,7 @@ class PaperBroker(BrokerProvider):
                 s.add(FillRecord(order_id=order.id, symbol=order.symbol, side=order.side, qty=fill_qty, price=fill_px, fee=fee, ts=bar.ts))
                 order.filled_qty += fill_qty
                 order.status = OrderStatus.FILLED.value if order.filled_qty >= order.qty else OrderStatus.PARTIALLY_FILLED.value
-                self._apply_fill(s, order.symbol, OrderSide(order.side), fill_qty, fill_px, fee)
+                self._apply_fill(s, order.symbol, OrderSide(order.side), fill_qty, fill_px, fee, bar.ts)
             s.commit()
 
     def force_flatten_symbol(self, symbol: str, ts: datetime, reference_price: float | None = None) -> None:
@@ -107,16 +107,16 @@ class PaperBroker(BrokerProvider):
             fee = self.cost_model.estimate_one_way_explicit_cost(fill_px, qty)
             synthetic_id = f"kill-{uuid4()}"
             s.add(FillRecord(order_id=synthetic_id, symbol=symbol, side=side.value, qty=qty, price=fill_px, fee=fee, ts=ts))
-            self._apply_fill(s, symbol, side, qty, fill_px, fee)
+            self._apply_fill(s, symbol, side, qty, fill_px, fee, ts)
             position = s.get(PositionRecord, symbol)
             if position is not None:
                 position.last_price = fill_px
             s.commit()
 
-    def _apply_fill(self, s: Session, symbol: str, side: OrderSide, qty: int, px: float, fee: float) -> None:
+    def _apply_fill(self, s: Session, symbol: str, side: OrderSide, qty: int, px: float, fee: float, ts: datetime) -> None:
         position = s.get(PositionRecord, symbol)
         if position is None:
-            position = PositionRecord(symbol=symbol, qty=0, avg_entry=0.0, last_price=px, realized_pnl=0.0)
+            position = PositionRecord(symbol=symbol, qty=0, avg_entry=0.0, last_price=px, realized_pnl=0.0, opened_at=None, cumulative_fees=0.0)
             s.add(position)
             s.flush()
 
@@ -125,10 +125,13 @@ class PaperBroker(BrokerProvider):
         new_qty = old_qty + signed_qty
         position.last_price = px
 
+        # New/increased position in same direction.
         if old_qty == 0 or (old_qty > 0 and signed_qty > 0) or (old_qty < 0 and signed_qty < 0):
             total_notional = abs(old_qty) * position.avg_entry + qty * px
             position.qty = new_qty
             position.avg_entry = total_notional / abs(new_qty)
+            position.opened_at = position.opened_at or ts
+            position.cumulative_fees += fee
             delta = -fee
             position.realized_pnl += delta
             if self.on_realized_pnl:
@@ -136,26 +139,66 @@ class PaperBroker(BrokerProvider):
             return
 
         close_qty = min(abs(old_qty), qty)
-        pnl_per_share = (px - position.avg_entry) if old_qty > 0 else (position.avg_entry - px)
-        delta = (close_qty * pnl_per_share) - fee
-        position.realized_pnl += delta
+        close_fee = fee * (close_qty / qty)
+        open_fee = fee - close_fee
+        entry_fee_alloc = position.cumulative_fees * (close_qty / abs(old_qty)) if abs(old_qty) > 0 else 0.0
+        gross_pnl = close_qty * ((px - position.avg_entry) if old_qty > 0 else (position.avg_entry - px))
+        net_pnl = gross_pnl - entry_fee_alloc - close_fee
+        realized_delta = gross_pnl - fee
+
+        position.realized_pnl += realized_delta
         if self.on_realized_pnl:
-            self.on_realized_pnl(delta)
+            self.on_realized_pnl(realized_delta)
+
+        trade_side = "LONG" if old_qty > 0 else "SHORT"
 
         if new_qty == 0:
-            s.add(ClosedTradeRecord(symbol=symbol, entry_price=position.avg_entry, exit_price=px, qty=close_qty, pnl=delta))
+            s.add(
+                ClosedTradeRecord(
+                    symbol=symbol,
+                    side=trade_side,
+                    entry_price=position.avg_entry,
+                    exit_price=px,
+                    qty=close_qty,
+                    entry_ts=position.opened_at,
+                    exit_ts=ts,
+                    gross_pnl=gross_pnl,
+                    fees=entry_fee_alloc + close_fee,
+                    net_pnl=net_pnl,
+                    pnl=net_pnl,
+                )
+            )
             position.qty = 0
             position.avg_entry = 0.0
+            position.opened_at = None
+            position.cumulative_fees = 0.0
             if self.on_position_closed:
                 self.on_position_closed(symbol)
             return
 
         if (old_qty > 0 > new_qty) or (old_qty < 0 < new_qty):
-            s.add(ClosedTradeRecord(symbol=symbol, entry_price=position.avg_entry, exit_price=px, qty=abs(old_qty), pnl=delta))
+            s.add(
+                ClosedTradeRecord(
+                    symbol=symbol,
+                    side=trade_side,
+                    entry_price=position.avg_entry,
+                    exit_price=px,
+                    qty=abs(old_qty),
+                    entry_ts=position.opened_at,
+                    exit_ts=ts,
+                    gross_pnl=gross_pnl,
+                    fees=entry_fee_alloc + close_fee,
+                    net_pnl=net_pnl,
+                    pnl=net_pnl,
+                )
+            )
             position.qty = new_qty
             position.avg_entry = px
+            position.opened_at = ts
+            position.cumulative_fees = open_fee
             if self.on_position_closed:
                 self.on_position_closed(symbol)
             return
 
         position.qty = new_qty
+        position.cumulative_fees = max(0.0, position.cumulative_fees - entry_fee_alloc)
