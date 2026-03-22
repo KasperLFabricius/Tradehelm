@@ -11,6 +11,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import sessionmaker
 
 from tradehelm.historical.interfaces import DividendEvent, SplitEvent
+from tradehelm.historical.intervals import ensure_supported_interval
 from tradehelm.persistence.db import HistoricalDatasetRecord
 from tradehelm.trading_engine.types import Bar
 
@@ -38,7 +39,11 @@ class HistoricalCache:
         end_date: date,
         adjusted: bool,
     ) -> str:
-        raw = f"{provider}|{symbol.upper()}|{interval}|{start_date.isoformat()}|{end_date.isoformat()}|{int(adjusted)}"
+        normalized_interval = ensure_supported_interval(interval)
+        raw = (
+            f"{provider}|{symbol.upper()}|{normalized_interval}|{start_date.isoformat()}|"
+            f"{end_date.isoformat()}|{int(adjusted)}"
+        )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
     def dataset_paths(self, cache_key: str) -> DatasetRef:

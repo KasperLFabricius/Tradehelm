@@ -46,6 +46,13 @@ def test_cache_key_includes_interval(tmp_path):
     assert key_5 != key_1
 
 
+def test_cache_key_rejects_unsupported_interval(tmp_path):
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'k2.db'}")
+    cache = HistoricalCache(session_factory, cache_dir=str(tmp_path / "cache"))
+    with pytest.raises(ValueError):
+        cache.make_cache_key("twelvedata", "AAPL", "2min", date(2026, 1, 1), date(2026, 1, 10), True)
+
+
 def test_adjustment_pipeline_split_behavior():
     bars = [Bar(ts=datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc), symbol="AAPL", open=100, high=101, low=99, close=100, volume=1)]
     adjusted = apply_corporate_action_adjustments(

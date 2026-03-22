@@ -45,8 +45,16 @@ class HistoricalService:
             allowed = ", ".join(supported_intervals())
             raise HistoricalValidationError("unsupported_interval", f"Unsupported interval: {req.interval}. Supported intervals: {allowed}.")
 
+    def normalized_interval(self, interval: str) -> str:
+        try:
+            return ensure_supported_interval(interval)
+        except ValueError:
+            allowed = ", ".join(supported_intervals())
+            raise HistoricalValidationError("unsupported_interval", f"Unsupported interval: {interval}. Supported intervals: {allowed}.")
+
     def fetch_and_cache(self, req: HistoricalRequest, use_existing: bool = True) -> dict:
         self.validate_request(req)
+        interval = self.normalized_interval(req.interval)
         normalized_symbols = sorted({s.strip().upper() for s in req.symbols if s.strip()})
         cached = []
         downloaded = []
@@ -54,7 +62,7 @@ class HistoricalService:
             existing = self.cache.find_dataset(
                 self.provider.name,
                 symbol,
-                req.interval,
+                interval,
                 req.start_date,
                 req.end_date,
                 req.adjusted,
@@ -63,7 +71,7 @@ class HistoricalService:
                 cached.append({"symbol": symbol, "cache_key": existing.cache_key, "reused": True})
                 continue
 
-            bars = self.provider.fetch_bars(symbol, req.interval, req.start_date, req.end_date)
+            bars = self.provider.fetch_bars(symbol, interval, req.start_date, req.end_date)
             deduped: dict = {(bar.ts, bar.symbol): bar for bar in bars}
             bars = sorted(deduped.values(), key=lambda b: (b.ts, b.symbol))
             if not bars:
@@ -74,7 +82,7 @@ class HistoricalService:
             ref = self.cache.write_dataset(
                 provider=self.provider.name,
                 symbol=symbol,
-                interval=req.interval,
+                interval=interval,
                 start_date=req.start_date,
                 end_date=req.end_date,
                 adjusted=req.adjusted,
@@ -95,7 +103,7 @@ class HistoricalService:
 
         return {
             "provider": self.provider.name,
-            "interval": req.interval,
+            "interval": interval,
             "start_date": req.start_date.isoformat(),
             "end_date": req.end_date.isoformat(),
             "adjusted": req.adjusted,
