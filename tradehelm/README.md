@@ -51,7 +51,7 @@ TradeHelm now supports local-first historical ingestion/caching and cached-data 
 ### Scope in this PR
 - Provider: Twelve Data only
 - Market: US equities only (symbol validation is intentionally conservative)
-- Interval: `5min` only
+- Supported intervals: `1min`, `5min`, `15min`, `30min`, `1h`
 - Backtests run from local cached snapshots (no live fetch during run)
 
 ### Twelve Data API key
@@ -67,15 +67,16 @@ $env:TWELVE_DATA_API_KEY=\"your_key_here\"
     - `symbols: list[str]`
     - `start_date: YYYY-MM-DD`
     - `end_date: YYYY-MM-DD`
-    - `interval: \"5min\"`
+    - `interval: \"1min\" | \"5min\" | \"15min\" | \"30min\" | \"1h\"`
     - `adjusted: bool`
 - `GET /historical/datasets` lists cached datasets
 - `GET /historical/cache` lists cache files
 - `POST /backtests/run` launches a cached-data backtest
 - `GET /backtests/runs` lists persisted backtest runs
-- `GET /backtests/{run_id}` returns run-scoped review artifacts (summary, trades, decisions)
+- `POST /backtests/compare` compares two or more run IDs with side-by-side metrics
+- `GET /backtests/{run_id}` returns run-scoped review artifacts (config snapshot, summary, trades, decisions, equity curve, symbol summary, decision summary)
 
-Backtest execution is isolated and reproducible: each run executes in its own temporary SQLite context, so existing replay/paper records in the main app DB cannot contaminate that run’s summary.
+Backtest execution is isolated and reproducible: each run executes in its own temporary SQLite context, so existing replay/paper records in the main app DB cannot contaminate that run’s summary. Each run persists a full config snapshot (`config_json`) including active friction/risk/strategy settings, enabled strategies, interval, symbols, and exact dataset keys used so post-run analysis remains immutable even after later config changes.
 
 ### Adjustment behavior
 - Intraday bars are fetched unadjusted and then adjusted client-side when `adjusted=true`.
@@ -85,16 +86,21 @@ Backtest execution is isolated and reproducible: each run executes in its own te
 
 ### Local cache behavior
 - Cached under `historical_cache/` by default.
-- Deterministic cache key includes provider, symbol, interval, date range, and adjusted flag.
+- Deterministic cache key includes provider, symbol, interval, date range, and adjusted flag (interval is part of dataset identity).
 - Each dataset stores:
   - `bars.csv`
   - `splits.csv`
   - `dividends.csv`
 - Metadata index is persisted in SQLite (`historical_datasets` table).
 
+### Analyzer/observer-style backtest artifacts
+Each completed run now stores deterministic review artifacts derived only from the isolated run DB:
+- equity curve points (`timestamp`, `equity`, `realized_pnl`, `unrealized_pnl`)
+- per-symbol summary (`trades`, `net_pnl`, `win_rate`, `total_fees`)
+- decision summary (`accepted/rejected`, counts by reason, counts by strategy)
+
 ### Current limitations
 - No non-US symbols
-- No intervals other than `5min`
 - No multi-provider routing
 - No cloud storage or optimizer/portfolio optimizer
 - No live broker integration
