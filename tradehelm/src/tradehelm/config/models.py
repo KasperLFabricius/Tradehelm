@@ -32,6 +32,21 @@ class OrbStrategyConfig(BaseModel):
     flatten_end_of_session: bool = True
 
 
+class GapOrbStrategyConfig(BaseModel):
+    enabled: bool = False
+    qty: int = Field(default=10, ge=1)
+    min_gap_pct: float = Field(default=0.75, ge=0)
+    min_opening_range_pct: float = Field(default=0.2, ge=0)
+    min_first_bar_volume: float = Field(default=0.0, ge=0)
+    opening_range_bars: int = Field(default=3, ge=1, le=20)
+    breakout_buffer: float = Field(default=0.05, ge=0)
+    direction: str = Field(default="BOTH", pattern="^(LONG|SHORT|BOTH)$")
+    stop_loss: float = Field(default=0.4, gt=0)
+    take_profit: float = Field(default=0.8, gt=0)
+    max_bars_in_trade: int = Field(default=12, ge=1)
+    flatten_end_of_session: bool = True
+
+
 class VwapStrategyConfig(BaseModel):
     enabled: bool = True
     qty: int = Field(default=10, ge=1)
@@ -43,9 +58,23 @@ class VwapStrategyConfig(BaseModel):
     max_bars_in_trade: int = Field(default=10, ge=1)
 
 
+class VwapMeanReversionStrategyConfig(BaseModel):
+    enabled: bool = False
+    qty: int = Field(default=10, ge=1)
+    stretch_threshold: float = Field(default=0.35, ge=0.0001)
+    reversion_confirmation_buffer: float = Field(default=0.05, ge=0)
+    direction: str = Field(default="BOTH", pattern="^(LONG|SHORT|BOTH)$")
+    stop_loss: float = Field(default=0.35, gt=0)
+    take_profit: float = Field(default=0.6, gt=0)
+    max_bars_in_trade: int = Field(default=10, ge=1)
+    flatten_end_of_session: bool = True
+
+
 class StrategiesConfig(BaseModel):
     orb: OrbStrategyConfig = OrbStrategyConfig()
     vwap: VwapStrategyConfig = VwapStrategyConfig()
+    gap_orb: GapOrbStrategyConfig = GapOrbStrategyConfig()
+    vwap_mean_reversion: VwapMeanReversionStrategyConfig = VwapMeanReversionStrategyConfig()
 
 
 class HistoricalProviderConfig(BaseModel):

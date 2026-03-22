@@ -1,12 +1,13 @@
-"""Streamlit operator dashboard for TradeHelm."""
+"""Streamlit Strategy Lab dashboard."""
 from __future__ import annotations
+
+import datetime as dt
 
 import streamlit as st
 
 from tradehelm.dashboard.client import ApiResult, call_api
 
 DEFAULT_API = "http://127.0.0.1:8000"
-DEFAULT_INTERVALS = ["1min", "5min", "15min", "30min", "1h"]
 
 
 def notify_action(result: ApiResult, ok_msg: str) -> None:
@@ -16,224 +17,141 @@ def notify_action(result: ApiResult, ok_msg: str) -> None:
         st.error(result.error or "Action failed")
 
 
-def render_live_status(api: str) -> None:
-    health = call_api(api, "GET", "/health")
-    state = call_api(api, "GET", "/state")
-
-    if not health.ok or not state.ok:
-        st.error((health.error or "") + " " + (state.error or ""))
-        return
-
-    health_payload = health.payload or {}
-    state_payload = state.payload or {}
-    readiness = health_payload.get("readiness", {})
-
-    st.header("Command Center")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Mode", state_payload.get("mode", "UNKNOWN"))
-    c2.metric("Replay Loaded", str(readiness.get("replay_loaded", False)))
-    c3.metric("Replay Running", str(readiness.get("replay_running", False)))
-    c4.metric("DB Reachable", str(readiness.get("db_reachable", False)))
-
-    st.caption(f"Replay Path: {state_payload.get('replay_path')}")
-    st.caption(f"Started: {state_payload.get('replay_started_at')} | Completed: {state_payload.get('replay_completed_at')}")
+def _default_request() -> dict:
+    today = dt.date.today()
+    return {
+        "symbols": ["AAPL", "MSFT"],
+        "start_date": (today - dt.timedelta(days=20)).isoformat(),
+        "end_date": (today - dt.timedelta(days=1)).isoformat(),
+        "interval": "5min",
+        "adjusted": True,
+        "enabled_strategies": ["orb", "vwap"],
+        "strategy_params": {},
+    }
 
 
 def render() -> None:
-    st.title("TradeHelm Dashboard")
+    st.title("TradeHelm Strategy Lab")
+    st.caption("Live experiment queue, run analysis, and strategy comparison.")
 
-    if "api_url" not in st.session_state:
-        st.session_state.api_url = DEFAULT_API
-    if "refresh_seconds" not in st.session_state:
-        st.session_state.refresh_seconds = 2
-    if "auto_refresh" not in st.session_state:
-        st.session_state.auto_refresh = True
-
-    st.sidebar.text_input("Control API URL", key="api_url")
-    st.sidebar.checkbox("Auto refresh", key="auto_refresh")
-    st.sidebar.slider("Refresh interval (seconds)", 1, 10, key="refresh_seconds")
-
+    st.sidebar.text_input("Control API URL", key="api_url", value=DEFAULT_API)
     api = st.session_state.api_url
 
-    if st.session_state.auto_refresh and hasattr(st, "fragment"):
+    catalog_result = call_api(api, "GET", "/backtests/strategies/catalog")
+    catalog = catalog_result.payload if catalog_result.ok and isinstance(catalog_result.payload, list) else []
+    intervals = call_api(api, "GET", "/historical/intervals").payload or {"intervals": ["5min"], "default": "5min"}
 
-        @st.fragment(run_every=f"{st.session_state.refresh_seconds}s")
-        def live_fragment() -> None:
-            render_live_status(api)
-
-        live_fragment()
-    else:
-        if st.button("Refresh now"):
-            st.rerun()
-        render_live_status(api)
-
-    st.subheader("Operator Controls")
-    mode = st.selectbox("Mode", ["STOPPED", "OBSERVE", "PAPER", "HALTED"], index=0)
+    st.header("New Experiment")
+    defaults = _default_request()
+    tickers = st.text_input("Tickers", value=",".join(defaults["symbols"]))
     c1, c2, c3 = st.columns(3)
-    if c1.button("Apply Mode"):
-        notify_action(call_api(api, "POST", "/state/mode", {"mode": mode}), f"Mode set to {mode}.")
-    if c2.button("Halt"):
-        notify_action(call_api(api, "POST", "/state/halt"), "Bot HALTED.")
-    kill_confirm = c3.checkbox("Confirm kill switch")
-    if c3.button("Kill Switch", disabled=not kill_confirm):
-        notify_action(call_api(api, "POST", "/state/kill"), "Kill switch engaged.")
+    start_date = c1.date_input("Start", value=dt.date.fromisoformat(defaults["start_date"]))
+    end_date = c2.date_input("End", value=dt.date.fromisoformat(defaults["end_date"]))
+    interval = c3.selectbox("Interval", intervals.get("intervals", ["5min"]))
+    adjusted = st.toggle("Adjusted", value=True)
 
-    st.subheader("Replay")
-    replay_path = st.text_input("Replay CSV path", value="sample_data/demo_intraday.csv")
-    r1, r2, r3 = st.columns(3)
-    if r1.button("Load Replay"):
-        notify_action(call_api(api, "POST", "/replay/load", {"path": replay_path}), "Replay dataset loaded.")
-    if r2.button("Start Replay"):
-        notify_action(call_api(api, "POST", "/replay/start"), "Replay started.")
-    if r3.button("Stop Replay"):
-        notify_action(call_api(api, "POST", "/replay/stop"), "Replay stop requested.")
+    strategy_ids = [row.get("strategy_id") for row in catalog if isinstance(row, dict)]
+    enabled_strategies = st.multiselect("Enabled strategies", strategy_ids, default=[s for s in ["orb", "vwap"] if s in strategy_ids])
+    strategy_params: dict[str, dict] = {}
+    with st.expander("Per-strategy parameters", expanded=False):
+        for row in catalog:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("strategy_id")
+            defaults_map = row.get("defaults") or {}
+            st.markdown(f"**{row.get('display_name')}** — {row.get('description')}")
+            patch: dict = {}
+            for k, v in defaults_map.items():
+                if k == "enabled":
+                    continue
+                key = f"{sid}_{k}"
+                if isinstance(v, bool):
+                    patch[k] = st.checkbox(f"{sid}.{k}", value=v, key=key)
+                elif isinstance(v, int):
+                    patch[k] = int(st.number_input(f"{sid}.{k}", value=v, key=key))
+                elif isinstance(v, float):
+                    patch[k] = float(st.number_input(f"{sid}.{k}", value=float(v), key=key))
+                else:
+                    patch[k] = st.text_input(f"{sid}.{k}", value=str(v), key=key)
+            strategy_params[sid] = patch
 
-    intervals_result = call_api(api, "GET", "/historical/intervals")
-    intervals_payload = intervals_result.payload if intervals_result.ok and isinstance(intervals_result.payload, dict) else {}
-    intervals = intervals_payload.get("intervals", DEFAULT_INTERVALS)
-    default_interval = intervals_payload.get("default", "5min")
-    default_interval_index = intervals.index(default_interval) if default_interval in intervals else 0
+    with st.expander("Optional friction/risk overrides", expanded=False):
+        risk_override = st.number_input("risk.max_trades_per_day override (0=off)", min_value=0, value=0)
+        friction_override = st.number_input("friction.assumed_slippage_bps override (0=off)", min_value=0.0, value=0.0)
 
-    st.subheader("Historical Backtesting (Twelve Data, US equities, cached)")
-    symbols_text = st.text_input("Tickers (comma-separated)", value="AAPL,MSFT")
-    h1, h2, h3 = st.columns(3)
-    start_date = h1.date_input("Start date")
-    end_date = h2.date_input("End date")
-    interval = h3.selectbox("Interval", intervals, index=default_interval_index)
-    adjusted = st.toggle("Adjusted intraday bars (split-adjusted)", value=True)
-
-    cfg_result = call_api(api, "GET", "/config")
-    cfg_payload = cfg_result.payload if cfg_result.ok and isinstance(cfg_result.payload, dict) else {}
-    orb_cfg = ((cfg_payload.get("strategies") or {}).get("orb") or {})
-    vwap_cfg = ((cfg_payload.get("strategies") or {}).get("vwap") or {})
-
-    with st.expander("Backtest strategy parameters", expanded=False):
-        st.write("ORB")
-        orb_opening_range_bars = st.number_input("opening_range_bars", min_value=1, value=int(orb_cfg.get("opening_range_bars", 3)), key="orb_opening_range_bars")
-        orb_breakout_buffer = st.number_input("breakout_buffer", min_value=0.0, value=float(orb_cfg.get("breakout_buffer", 0.05)), key="orb_breakout_buffer")
-        orb_direction = st.selectbox("ORB direction", ["LONG", "SHORT", "BOTH"], index=["LONG", "SHORT", "BOTH"].index(str(orb_cfg.get("direction", "BOTH"))), key="orb_direction")
-        orb_stop_loss = st.number_input("stop_loss", min_value=0.0001, value=float(orb_cfg.get("stop_loss", 0.4)), key="orb_stop_loss")
-        orb_take_profit = st.number_input("take_profit", min_value=0.0001, value=float(orb_cfg.get("take_profit", 0.8)), key="orb_take_profit")
-        orb_max_bars = st.number_input("max_bars_in_trade", min_value=1, value=int(orb_cfg.get("max_bars_in_trade", 12)), key="orb_max_bars")
-        orb_flatten = st.checkbox("flatten_end_of_session", value=bool(orb_cfg.get("flatten_end_of_session", True)), key="orb_flatten")
-
-        st.write("VWAP")
-        vwap_pullback_threshold = st.number_input("pullback_threshold", min_value=0.0001, value=float(vwap_cfg.get("pullback_threshold", 0.15)), key="vwap_pullback_threshold")
-        vwap_reentry_buffer = st.number_input("reentry_buffer", min_value=0.0, value=float(vwap_cfg.get("reentry_buffer", 0.05)), key="vwap_reentry_buffer")
-        vwap_direction = st.selectbox("VWAP direction", ["LONG", "SHORT", "BOTH"], index=["LONG", "SHORT", "BOTH"].index(str(vwap_cfg.get("direction", "BOTH"))), key="vwap_direction")
-        vwap_stop_loss = st.number_input("VWAP stop_loss", min_value=0.0001, value=float(vwap_cfg.get("stop_loss", 0.35)), key="vwap_stop_loss")
-        vwap_take_profit = st.number_input("VWAP take_profit", min_value=0.0001, value=float(vwap_cfg.get("take_profit", 0.7)), key="vwap_take_profit")
-        vwap_max_bars = st.number_input("VWAP max_bars_in_trade", min_value=1, value=int(vwap_cfg.get("max_bars_in_trade", 10)), key="vwap_max_bars")
-
-    symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
+    symbols = [s.strip().upper() for s in tickers.split(",") if s.strip()]
     request_payload = {
         "symbols": symbols,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "interval": interval,
         "adjusted": adjusted,
-        "use_existing_cache": True,
-    }
-    strategy_config_patch = {
-        "strategies": {
-            "orb": {
-                "opening_range_bars": int(orb_opening_range_bars),
-                "breakout_buffer": float(orb_breakout_buffer),
-                "direction": orb_direction,
-                "stop_loss": float(orb_stop_loss),
-                "take_profit": float(orb_take_profit),
-                "max_bars_in_trade": int(orb_max_bars),
-                "flatten_end_of_session": bool(orb_flatten),
-            },
-            "vwap": {
-                "pullback_threshold": float(vwap_pullback_threshold),
-                "reentry_buffer": float(vwap_reentry_buffer),
-                "direction": vwap_direction,
-                "stop_loss": float(vwap_stop_loss),
-                "take_profit": float(vwap_take_profit),
-                "max_bars_in_trade": int(vwap_max_bars),
-            },
-        }
+        "enabled_strategies": enabled_strategies,
+        "strategy_params": {sid: strategy_params.get(sid, {}) for sid in enabled_strategies},
+        "risk_overrides": {"max_trades_per_day": int(risk_override)} if risk_override > 0 else None,
+        "friction_overrides": {"assumed_slippage_bps": float(friction_override)} if friction_override > 0 else None,
     }
 
-    hb1, hb2 = st.columns(2)
-    if hb1.button("Fetch / Cache Historical Data"):
-        notify_action(call_api(api, "POST", "/historical/fetch", request_payload), "Historical data fetched/cached.")
-    if hb2.button("Run Cached Backtest"):
-        current_cfg_result = call_api(api, "GET", "/config")
-        if not current_cfg_result.ok or not isinstance(current_cfg_result.payload, dict):
-            st.error(current_cfg_result.error or "Unable to load config")
-        else:
-            updated_cfg = current_cfg_result.payload
-            updated_cfg.update(strategy_config_patch)
-            cfg_update = call_api(api, "POST", "/config", {"config": updated_cfg})
-            if not cfg_update.ok:
-                st.error(cfg_update.error or "Failed to apply strategy params")
-            else:
-                run_payload = dict(request_payload)
-                run_payload.pop("use_existing_cache", None)
-                notify_action(call_api(api, "POST", "/backtests/run", run_payload), "Backtest run complete.")
+    b1, b2 = st.columns(2)
+    if b1.button("Fetch/cache if needed"):
+        notify_action(call_api(api, "POST", "/historical/fetch", {**request_payload, "use_existing_cache": True}), "Historical data fetched/cached.")
+    if b2.button("Queue backtest job"):
+        notify_action(call_api(api, "POST", "/backtests/jobs", request_payload), "Backtest job queued.")
 
-    st.write("Cached Datasets")
-    st.dataframe(call_api(api, "GET", "/historical/datasets").payload or [])
-    st.write("Backtest Runs")
-    runs_result = call_api(api, "GET", "/backtests/runs")
-    runs_payload = runs_result.payload or []
-    st.dataframe(runs_payload)
-
-    st.subheader("Backtest Run Detail")
-    run_options = {f"Run {row['id']} ({row.get('interval')} | {','.join(row.get('symbols', []))})": row["id"] for row in runs_payload if isinstance(row, dict) and "id" in row}
-    if run_options:
-        selected_run_label = st.selectbox("Select run", list(run_options.keys()), key="run_detail_selector")
-        selected_run_id = run_options[selected_run_label]
-        run_detail = call_api(api, "GET", f"/backtests/{selected_run_id}")
-        if run_detail.ok and isinstance(run_detail.payload, dict):
-            rd = run_detail.payload
-            st.write("Config snapshot")
-            st.json(rd.get("config", {}))
-            st.write("Summary metrics")
-            st.json(rd.get("summary", {}))
-            st.write("Decision summary")
-            st.json(rd.get("decision_summary", {}))
-            st.write("Equity curve")
-            st.line_chart(rd.get("equity_curve", []), x="timestamp", y="equity")
-            st.write("Per-symbol breakdown")
-            st.dataframe(rd.get("symbol_summary", []))
-            st.write("Trade list")
-            st.dataframe(rd.get("trades", []))
-        else:
-            st.warning(run_detail.error or "Run detail unavailable")
-
-    st.subheader("Backtest Comparison")
-    if run_options:
-        selected_compare_labels = st.multiselect("Select 2+ runs", list(run_options.keys()), key="run_compare_selector")
-        if st.button("Compare selected runs") and len(selected_compare_labels) >= 2:
-            run_ids = [run_options[label] for label in selected_compare_labels]
-            compare_result = call_api(api, "POST", "/backtests/compare", {"run_ids": run_ids})
-            if compare_result.ok and isinstance(compare_result.payload, dict):
-                compare_payload = compare_result.payload
-                st.dataframe(compare_payload.get("runs", []))
-                st.write("Per-symbol detail")
-                for row in compare_payload.get("runs", []):
-                    st.write(f"Run {row.get('run_id')}")
-                    st.dataframe(row.get("symbol_summary", []))
-            else:
-                st.warning(compare_result.error or "Comparison unavailable")
-
-    st.subheader("Strategies")
-    strategies = call_api(api, "GET", "/strategies")
-    if strategies.ok:
-        for item in strategies.payload or []:
-            c1, c2, c3 = st.columns([2, 1, 1])
-            sid = item["strategy_id"]
-            c1.write(f"{sid} enabled={item.get('enabled')}")
-            c1.json(item.get("status", {}))
-            if c2.button(f"Enable {sid}"):
-                notify_action(call_api(api, "POST", f"/strategies/{sid}/enable"), f"{sid} enabled.")
-            if c3.button(f"Disable {sid}"):
-                notify_action(call_api(api, "POST", f"/strategies/{sid}/disable"), f"{sid} disabled.")
+    st.header("Running Jobs")
+    if hasattr(st, "fragment"):
+        @st.fragment(run_every="2s")
+        def jobs_fragment() -> None:
+            jobs = call_api(api, "GET", "/backtests/jobs").payload or []
+            st.dataframe(jobs)
+        jobs_fragment()
     else:
-        st.error(strategies.error)
+        st.dataframe(call_api(api, "GET", "/backtests/jobs").payload or [])
+
+    jobs = call_api(api, "GET", "/backtests/jobs").payload or []
+    job_map = {f"Job {j['id']} ({j['status']})": j["id"] for j in jobs if isinstance(j, dict) and "id" in j}
+
+    st.header("Job progress panel")
+    if job_map:
+        sel_job = st.selectbox("Select job", list(job_map.keys()))
+        job_id = job_map[sel_job]
+        job = call_api(api, "GET", f"/backtests/jobs/{job_id}").payload or {}
+        st.json(job.get("progress", {}))
+        if st.button("Cancel selected job"):
+            notify_action(call_api(api, "POST", f"/backtests/jobs/{job_id}/cancel"), "Cancel request submitted.")
+
+        st.subheader("Event feed panel")
+        st.dataframe(call_api(api, "GET", f"/backtests/jobs/{job_id}/events").payload or [])
+
+    st.header("Run Detail panel")
+    runs = call_api(api, "GET", "/backtests/runs").payload or []
+    run_map = {f"Run {r['id']} ({r['status']})": r["id"] for r in runs if isinstance(r, dict) and "id" in r}
+    if run_map:
+        run_id = run_map[st.selectbox("Select run", list(run_map.keys()))]
+        detail = call_api(api, "GET", f"/backtests/{run_id}").payload or {}
+        st.write("Config snapshot")
+        st.json(detail.get("config", {}))
+        st.write("Summary")
+        st.json(detail.get("summary", {}))
+        st.write("Equity curve")
+        st.line_chart(detail.get("equity_curve", []), x="timestamp", y="equity")
+        st.write("Per-symbol summary")
+        st.dataframe(detail.get("symbol_summary", []))
+        st.write("Per-strategy summary")
+        st.dataframe(detail.get("strategy_summary", []))
+        st.write("Decision summary")
+        st.json(detail.get("decision_summary", {}))
+        st.write("Trade timeline")
+        st.dataframe(detail.get("trade_timeline", []))
+
+    st.header("Run Comparison panel")
+    if run_map:
+        selected = st.multiselect("Select 2+ runs", list(run_map.keys()))
+        if st.button("Compare") and len(selected) >= 2:
+            ids = [run_map[x] for x in selected]
+            cmp = call_api(api, "POST", "/backtests/compare", {"run_ids": ids})
+            if cmp.ok and isinstance(cmp.payload, dict):
+                st.dataframe(cmp.payload.get("runs", []))
 
 
 render()

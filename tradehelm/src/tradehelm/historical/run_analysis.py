@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
 
 
 class RunAnalysisService:
@@ -86,9 +85,78 @@ class RunAnalysisService:
             "total_decisions": len(decisions),
         }
 
-    def build_run_artifacts(self, trades: list[dict], decisions: list[dict]) -> dict:
+    def build_strategy_summary(self, decisions: list[dict], trades: list[dict]) -> list[dict]:
+        stats: dict[str, dict] = defaultdict(lambda: {"accepted_entries": 0, "accepted_exits": 0, "rejected_entries": 0, "rejected_exits": 0, "closed_trades": 0, "net_pnl": 0.0})
+        for decision in decisions:
+            sid = str(decision.get("strategy_id") or "unknown")
+            accepted = bool(decision.get("accepted"))
+            action = self._normalize_action(decision.get("action"))
+            key = ("accepted" if accepted else "rejected") + ("_entries" if action == "ENTRY" else "_exits")
+            if key in stats[sid]:
+                stats[sid][key] += 1
+        # Best-effort attribution: use entry strategy id when present on trade payload.
+        for trade in trades:
+            sid = str(trade.get("strategy_id") or "unknown")
+            stats[sid]["closed_trades"] += 1
+            stats[sid]["net_pnl"] += float(trade.get("net_pnl", 0.0) or 0.0)
+        return [{"strategy_id": sid, **values} for sid, values in sorted(stats.items(), key=lambda item: item[0])]
+
+    def build_trade_timeline(self, trades: list[dict]) -> list[dict]:
+        ordered = sorted(trades, key=lambda t: (t.get("exit_ts") or t.get("entry_ts") or "", t.get("id") or 0))
+        return [
+            {
+                "trade_id": trade.get("id"),
+                "symbol": trade.get("symbol"),
+                "side": trade.get("side"),
+                "entry_ts": trade.get("entry_ts"),
+                "exit_ts": trade.get("exit_ts"),
+                "qty": trade.get("qty"),
+                "net_pnl": float(trade.get("net_pnl", 0.0) or 0.0),
+                "fees": float(trade.get("fees", 0.0) or 0.0),
+            }
+            for trade in ordered
+        ]
+
+    def build_headline_summary(self, summary: dict, equity_curve: list[dict]) -> dict:
+        wins = int(summary.get("winning_trades", 0) or 0)
+        losses = int(summary.get("losing_trades", 0) or 0)
+        trade_count = int(summary.get("total_closed_trades", 0) or 0)
+        gross_profit = float(summary.get("gross_profit", 0.0) or 0.0)
+        gross_loss = abs(float(summary.get("gross_loss", 0.0) or 0.0))
+        avg_winner = (gross_profit / wins) if wins else 0.0
+        avg_loser = -(gross_loss / losses) if losses else 0.0
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else None
+        expectancy = float(summary.get("net_realized_pnl", 0.0) or 0.0) / trade_count if trade_count else 0.0
+        max_drawdown = 0.0
+        peak = 0.0
+        for point in equity_curve:
+            equity = float(point.get("equity", 0.0) or 0.0)
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, peak - equity)
+        total_days = max(float(summary.get("active_session_days", 1.0) or 1.0), 1.0)
         return {
-            "equity_curve": self.build_equity_curve(trades),
+            "net_pnl": float(summary.get("net_realized_pnl", 0.0) or 0.0),
+            "gross_pnl": float(summary.get("gross_realized_pnl", 0.0) or 0.0),
+            "win_rate": float(summary.get("win_rate", 0.0) or 0.0),
+            "trade_count": trade_count,
+            "total_fees": float(summary.get("total_fees_paid", 0.0) or 0.0),
+            "best_trade": float(summary.get("best_trade", 0.0) or 0.0),
+            "worst_trade": float(summary.get("worst_trade", 0.0) or 0.0),
+            "average_winner": avg_winner,
+            "average_loser": avg_loser,
+            "expectancy_per_trade": expectancy,
+            "trades_per_day": trade_count / total_days,
+            "profit_factor": profit_factor,
+            "max_drawdown": max_drawdown,
+        }
+
+    def build_run_artifacts(self, trades: list[dict], decisions: list[dict], summary: dict | None = None) -> dict:
+        equity_curve = self.build_equity_curve(trades)
+        return {
+            "equity_curve": equity_curve,
             "symbol_summary": self.build_symbol_summary(trades),
             "decision_summary": self.build_decision_summary(decisions),
+            "strategy_summary": self.build_strategy_summary(decisions, trades),
+            "trade_timeline": self.build_trade_timeline(trades),
+            "headline_summary": self.build_headline_summary(summary or {}, equity_curve),
         }

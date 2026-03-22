@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 
+from tradehelm.backtests.models import BacktestCompareRequest, BacktestRequest
 from tradehelm.config.models import AppConfig
 from tradehelm.historical.backtest_runner import BacktestRunner
 from tradehelm.historical.cache import HistoricalCache
@@ -22,7 +23,10 @@ from tradehelm.persistence.db import create_session_factory
 from tradehelm.persistence.state_store import PersistedStateStore
 from tradehelm.strategies.noop import NoOpStrategy
 from tradehelm.strategies.orb import OpeningRangeBreakoutStrategy
+from tradehelm.strategies.catalog import strategy_catalog_payload
 from tradehelm.strategies.vwap import VwapContinuationStrategy
+from tradehelm.strategies.gap_orb import GapFilteredOrbStrategy
+from tradehelm.strategies.vwap_mean_reversion import VwapMeanReversionStrategy
 from tradehelm.trading_engine.engine import TradingEngine
 from tradehelm.trading_engine.errors import EngineError
 from tradehelm.trading_engine.types import BotMode
@@ -59,18 +63,6 @@ class HistoricalFetchRequest(BaseModel):
     use_existing_cache: bool = True
 
 
-class BacktestLaunchRequest(BaseModel):
-    symbols: list[str]
-    start_date: date
-    end_date: date
-    interval: str = DEFAULT_INTERVAL
-    adjusted: bool = True
-
-class BacktestCompareRequest(BaseModel):
-    run_ids: list[int]
-
-
-
 def build_historical_stack(session_factory, config: AppConfig) -> tuple[HistoricalCache, HistoricalService, BacktestRunner]:
     cache = HistoricalCache(session_factory, cache_dir=config.historical.cache_dir)
     provider = TwelveDataHistoricalProvider(
@@ -90,6 +82,8 @@ def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEng
         NoOpStrategy(),
         OpeningRangeBreakoutStrategy(config.strategies.orb),
         VwapContinuationStrategy(config.strategies.vwap),
+        GapFilteredOrbStrategy(config.strategies.gap_orb),
+        VwapMeanReversionStrategy(config.strategies.vwap_mean_reversion),
     ]
     return TradingEngine(session_factory, config, strategies, state_store=state_store)
 
@@ -297,7 +291,11 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
         return cache.list_datasets()
 
     @app.post("/backtests/run")
-    def backtests_run(req: BacktestLaunchRequest):
+    def backtests_run(req: BacktestRequest):
+        return backtests_jobs_create(req)
+
+    @app.post("/backtests/jobs")
+    def backtests_jobs_create(req: BacktestRequest):
         assert historical_service is not None
         assert backtest_runner is not None
         try:
@@ -311,13 +309,11 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
                 )
             )
             symbols = sorted({s.strip().upper() for s in req.symbols if s.strip()})
-            return backtest_runner.run(
+            request = req.model_copy(update={"symbols": symbols})
+            backtest_runner.validate_request_overrides(request)
+            return backtest_runner.enqueue_job(
                 provider=historical_service.provider.name,
-                symbols=symbols,
-                start_date=req.start_date.isoformat(),
-                end_date=req.end_date.isoformat(),
-                interval=req.interval,
-                adjusted=req.adjusted,
+                request=request,
             )
         except ValueError as exc:
             if str(exc).startswith("no_cached_dataset_available:"):
@@ -326,10 +322,47 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
                     error={"code": "no_cached_dataset_available", "message": f"No cached dataset available for {symbol}."}
                 ).model_dump()
                 return JSONResponse(status_code=400, content=payload)
+            if str(exc).startswith("unknown_strategy_override:"):
+                bad = str(exc).split(":", 1)[1]
+                payload = ApiError(
+                    error={"code": "invalid_backtest_request", "message": f"Unknown strategy override(s): {bad}."}
+                ).model_dump()
+                return JSONResponse(status_code=400, content=payload)
             raise
+        except ValidationError as exc:
+            payload = ApiError(
+                error={"code": "invalid_backtest_request", "message": f"Invalid backtest override payload: {exc.errors()}"}
+            ).model_dump()
+            return JSONResponse(status_code=422, content=payload)
         except Exception as exc:
             status, payload = historical_service.map_error(exc)
             return JSONResponse(status_code=status, content=ApiError(error=payload).model_dump())
+
+    @app.get("/backtests/jobs")
+    def backtests_jobs() -> list[dict]:
+        assert backtest_runner is not None
+        return backtest_runner.list_jobs()
+
+    @app.get("/backtests/jobs/{job_id}")
+    def backtests_job_detail(job_id: int):
+        assert backtest_runner is not None
+        payload = backtest_runner.get_job(job_id)
+        if payload is None:
+            return JSONResponse(status_code=404, content=ApiError(error={"code": "backtest_job_not_found", "message": "Backtest job not found."}).model_dump())
+        return payload
+
+    @app.post("/backtests/jobs/{job_id}/cancel")
+    def backtests_job_cancel(job_id: int):
+        assert backtest_runner is not None
+        payload = backtest_runner.cancel_job(job_id)
+        if payload is None:
+            return JSONResponse(status_code=404, content=ApiError(error={"code": "backtest_job_not_found", "message": "Backtest job not found."}).model_dump())
+        return payload
+
+    @app.get("/backtests/jobs/{job_id}/events")
+    def backtests_job_events(job_id: int) -> list[dict]:
+        assert backtest_runner is not None
+        return backtest_runner.list_job_events(job_id)
 
     @app.get("/backtests/runs")
     def backtests_runs() -> list[dict]:
@@ -356,6 +389,10 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
                 content=ApiError(error={"code": "backtest_run_not_found", "message": "Backtest run not found."}).model_dump(),
             )
         return payload
+
+    @app.get("/backtests/strategies/catalog")
+    def backtests_strategy_catalog() -> list[dict]:
+        return strategy_catalog_payload(engine.config)
 
     return app
 

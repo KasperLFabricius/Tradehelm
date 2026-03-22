@@ -143,6 +143,10 @@ class TradingEngine:
                     state.strategy.config = self.config.strategies.orb
                 elif sid == "vwap":
                     state.strategy.config = self.config.strategies.vwap
+                elif sid == "gap_orb":
+                    state.strategy.config = self.config.strategies.gap_orb
+                elif sid == "vwap_mean_reversion":
+                    state.strategy.config = self.config.strategies.vwap_mean_reversion
 
     def apply_config(self, new_config: AppConfig, persist: bool = True) -> dict[str, Any]:
         """Apply runtime config updates to active engine components."""

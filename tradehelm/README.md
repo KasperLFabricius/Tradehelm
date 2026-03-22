@@ -71,12 +71,30 @@ $env:TWELVE_DATA_API_KEY=\"your_key_here\"
     - `adjusted: bool`
 - `GET /historical/datasets` lists cached datasets
 - `GET /historical/cache` lists cache files
-- `POST /backtests/run` launches a cached-data backtest
+- `POST /backtests/jobs` queues a cached-data backtest job (async)
+- `GET /backtests/jobs` lists jobs with live status/progress
+- `GET /backtests/jobs/{job_id}` returns current job snapshot
+- `POST /backtests/jobs/{job_id}/cancel` requests cooperative cancellation
+- `GET /backtests/jobs/{job_id}/events` returns the job activity feed
+- `POST /backtests/run` remains as compatibility alias to job enqueue
 - `GET /backtests/runs` lists persisted backtest runs
 - `POST /backtests/compare` compares two or more run IDs with side-by-side metrics
-- `GET /backtests/{run_id}` returns run-scoped review artifacts (config snapshot, summary, trades, decisions, equity curve, symbol summary, decision summary)
+- `GET /backtests/{run_id}` returns run-scoped review artifacts (config snapshot, summary, trades, decisions, equity curve, symbol summary, per-strategy summary, trade timeline, decision summary, event timeline)
 
 Backtest execution is isolated and reproducible: each run executes in its own temporary SQLite context, so existing replay/paper records in the main app DB cannot contaminate that run’s summary. Each run persists a full config snapshot (`config_json`) including active friction/risk/strategy settings, enabled strategies, interval, symbols, and exact dataset keys used so post-run analysis remains immutable even after later config changes.
+
+### Strategy Lab workflow
+- Build a **New Experiment** request with symbols/date/interval/adjusted, enabled strategies, and per-strategy parameter overrides.
+- Optional per-run friction/risk overrides are applied to that experiment only; global app config is not mutated.
+- Queue a job and monitor `QUEUED → RUNNING → COMPLETED/FAILED/CANCELLED` with percent progress and current symbol/timestamp.
+- Review results in richer run detail panels and compare runs including drawdown, expectancy, trades/day, per-symbol and per-strategy diagnostics.
+
+### Strategy catalog and new candidates
+- `GET /backtests/strategies/catalog` exposes strategy metadata for UI form generation (`strategy_id`, display name, description, regime type, interval hints, defaults).
+- Existing strategies remain available: ORB and VWAP continuation.
+- New candidates:
+  - **Gap-filtered ORB** (`gap_orb`): ORB with minimum opening gap/opening-range/volume preconditions.
+  - **VWAP mean reversion** (`vwap_mean_reversion`): enters on controlled reversion after VWAP stretch.
 
 ### Adjustment behavior
 - Intraday bars are fetched unadjusted and then adjusted client-side when `adjusted=true`.
@@ -104,6 +122,8 @@ Each completed run now stores deterministic review artifacts derived only from t
 - No multi-provider routing
 - No cloud storage or optimizer/portfolio optimizer
 - No live broker integration
+- No parameter sweeps/grid search
+- No ML/AI/news/calendar factors
 
 
 ## Replay review analytics (paper-trading)
