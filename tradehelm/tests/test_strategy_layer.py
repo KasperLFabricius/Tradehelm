@@ -131,6 +131,7 @@ def test_engine_handles_typed_intents_and_reasons_persisted():
         orders = s.scalars(select(OrderRecord)).all()
         decisions = s.scalars(select(DecisionRecord)).all()
         assert len(orders) == 1
+        assert decisions[0].action == "ENTRY"
         assert decisions[0].reason == "typed_entry"
     assert getattr(strategy, "accepted", False) is True
 

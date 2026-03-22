@@ -293,6 +293,7 @@ class TradingEngine:
         symbol: str
         side: str
         qty: int
+        action: str = str(kwargs.get("action", "UNKNOWN"))
 
         if args and isinstance(args[0], StrategyIntent):
             intent = args[0]
@@ -300,6 +301,7 @@ class TradingEngine:
             symbol = intent.symbol
             side = intent.side.value
             qty = intent.qty
+            action = intent.action.value
             if len(args) >= 3:
                 accepted = bool(args[1])
                 reason = str(args[2])
@@ -322,6 +324,7 @@ class TradingEngine:
                     symbol=symbol,
                     side=side,
                     qty=qty,
+                    action=action,
                     accepted=1 if accepted else 0,
                     reason=reason,
                     mode=self.state_machine.mode.value,

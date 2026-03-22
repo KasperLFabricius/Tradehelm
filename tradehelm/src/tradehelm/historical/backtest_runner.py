@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from tradehelm.analytics.service import AnalyticsService
 from tradehelm.config.models import AppConfig
 from tradehelm.historical.cache import HistoricalCache
+from tradehelm.historical.intervals import ensure_supported_interval
 from tradehelm.historical.run_analysis import RunAnalysisService
 from tradehelm.persistence.db import BacktestRunRecord, create_session_factory
 from tradehelm.strategies.noop import NoOpStrategy
@@ -66,13 +67,14 @@ class BacktestRunner:
         }
 
     def run(self, provider: str, symbols: list[str], start_date: str, end_date: str, interval: str, adjusted: bool) -> dict:
+        normalized_interval = ensure_supported_interval(interval)
         keys: list[str] = []
         csv_lines = ["timestamp,symbol,open,high,low,close,volume"]
         for symbol in symbols:
             row = self.cache.find_dataset(
                 provider=provider,
                 symbol=symbol,
-                interval=interval,
+                interval=normalized_interval,
                 start_date=datetime.fromisoformat(start_date).date(),
                 end_date=datetime.fromisoformat(end_date).date(),
                 adjusted=adjusted,
@@ -89,13 +91,13 @@ class BacktestRunner:
         tmp_csv.write_text("\n".join(csv_lines), encoding="utf-8")
 
         started = datetime.now(timezone.utc)
-        run_snapshot = self._config_snapshot(provider, symbols, start_date, end_date, interval, adjusted, keys)
+        run_snapshot = self._config_snapshot(provider, symbols, start_date, end_date, normalized_interval, adjusted, keys)
         run_snapshot["enabled_strategies"] = [s for s in run_snapshot["enabled_strategies"] if s is not None]
         with self.main_session_factory() as session:
             run = BacktestRunRecord(
                 provider=provider,
                 symbols_csv=",".join(symbols),
-                interval=interval,
+                interval=normalized_interval,
                 start_date=start_date,
                 end_date=end_date,
                 adjusted=int(adjusted),

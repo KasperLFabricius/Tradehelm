@@ -10,7 +10,7 @@ from tradehelm.historical.backtest_runner import BacktestRunner
 from tradehelm.historical.cache import HistoricalCache
 from tradehelm.historical.run_analysis import RunAnalysisService
 from tradehelm.persistence.db import BacktestRunRecord, ClosedTradeRecord, PositionRecord, create_session_factory
-from tradehelm.trading_engine.types import Bar
+from tradehelm.trading_engine.types import Bar, StrategyAction
 
 
 def test_backtest_run_created_from_cached_data(tmp_path):
@@ -202,16 +202,40 @@ def test_run_analysis_symbol_and_decision_summary_for_multi_symbol():
         {"id": 3, "symbol": "AAPL", "net_pnl": 4.0, "fees": 0.2, "exit_ts": "2026-01-01T14:45:00+00:00"},
     ]
     decisions = [
-        {"strategy_id": "orb", "accepted": True, "reason": "accepted_entry"},
-        {"strategy_id": "orb", "accepted": False, "reason": "risk_rejection"},
-        {"strategy_id": "vwap", "accepted": False, "reason": "risk_rejection"},
+        {"strategy_id": "orb", "accepted": True, "action": "ENTRY", "reason": "accepted_entry"},
+        {"strategy_id": "orb", "accepted": True, "action": "EXIT", "reason": "exit_accepted"},
+        {"strategy_id": "vwap", "accepted": False, "action": "ENTRY", "reason": "risk_rejection"},
     ]
     artifacts = svc.build_run_artifacts(trades, decisions)
     assert artifacts["equity_curve"]
     aapl = [row for row in artifacts["symbol_summary"] if row["symbol"] == "AAPL"][0]
     assert aapl["trades"] == 2
     assert aapl["net_pnl"] == 14.0
-    assert artifacts["decision_summary"]["by_reason"]["risk_rejection"] == 2
+    assert artifacts["decision_summary"]["by_reason"]["risk_rejection"] == 1
+    assert artifacts["decision_summary"]["decision_count_by_strategy"]["orb"] == 2
+    assert artifacts["decision_summary"]["trade_count_by_strategy"]["orb"] == 1
+
+
+def test_run_analysis_handles_legacy_decisions_without_action():
+    svc = RunAnalysisService()
+    artifacts = svc.build_run_artifacts(
+        trades=[],
+        decisions=[
+            {"strategy_id": "orb", "accepted": True, "reason": "legacy_accepted_without_action"},
+            {"strategy_id": "orb", "accepted": False, "reason": "legacy_rejected_without_action"},
+        ],
+    )
+    assert artifacts["decision_summary"]["decision_count_by_strategy"]["orb"] == 2
+    assert artifacts["decision_summary"]["trade_count_by_strategy"] == {}
+
+
+def test_run_analysis_counts_entry_from_enum_action_value():
+    svc = RunAnalysisService()
+    artifacts = svc.build_run_artifacts(
+        trades=[],
+        decisions=[{"strategy_id": "orb", "accepted": True, "action": StrategyAction.ENTRY, "reason": "enum_action"}],
+    )
+    assert artifacts["decision_summary"]["trade_count_by_strategy"]["orb"] == 1
 
 
 def test_compare_runs_returns_metrics(tmp_path):
@@ -285,3 +309,23 @@ def test_backtest_uses_windows_safe_temp_db_path(tmp_path, monkeypatch):
     run_db_path = Path(observed_run_db_urls[0].replace("sqlite:///", ""))
     assert run_db_path.name == "run.db"
     assert not run_db_path.parent.exists()
+
+
+def test_backtest_runner_normalizes_interval_for_dataset_lookup(tmp_path):
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'normalized.db'}")
+    cache = HistoricalCache(session_factory, cache_dir=str(tmp_path / "cache"))
+    cache.write_dataset(
+        provider="twelvedata",
+        symbol="AAPL",
+        interval="5min",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        adjusted=False,
+        bars=[Bar(ts=datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc), symbol="AAPL", open=1, high=1, low=1, close=1, volume=1)],
+        splits=[],
+        dividends=[],
+    )
+    runner = BacktestRunner(session_factory, cache, AppConfig())
+    result = runner.run("twelvedata", ["AAPL"], "2026-01-01", "2026-01-03", " 5min ", False)
+    assert result["status"] == "COMPLETED"
+    assert result["config"]["interval"] == "5min"

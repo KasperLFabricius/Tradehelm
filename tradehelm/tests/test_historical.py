@@ -46,6 +46,32 @@ def test_cache_key_includes_interval(tmp_path):
     assert key_5 != key_1
 
 
+def test_cache_key_rejects_unsupported_interval(tmp_path):
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'k2.db'}")
+    cache = HistoricalCache(session_factory, cache_dir=str(tmp_path / "cache"))
+    with pytest.raises(ValueError):
+        cache.make_cache_key("twelvedata", "AAPL", "2min", date(2026, 1, 1), date(2026, 1, 10), True)
+
+
+def test_write_dataset_stores_canonical_interval_in_manifest(tmp_path):
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'manifest.db'}")
+    cache = HistoricalCache(session_factory, cache_dir=str(tmp_path / "cache"))
+    cache.write_dataset(
+        provider="twelvedata",
+        symbol="AAPL",
+        interval=" 5min ",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 2),
+        adjusted=False,
+        bars=[Bar(ts=datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc), symbol="AAPL", open=1, high=1, low=1, close=1, volume=1)],
+        splits=[],
+        dividends=[],
+    )
+    dataset = cache.find_dataset("twelvedata", "AAPL", "5min", date(2026, 1, 1), date(2026, 1, 2), False)
+    assert dataset is not None
+    assert dataset.interval == "5min"
+
+
 def test_adjustment_pipeline_split_behavior():
     bars = [Bar(ts=datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc), symbol="AAPL", open=100, high=101, low=99, close=100, volume=1)]
     adjusted = apply_corporate_action_adjustments(

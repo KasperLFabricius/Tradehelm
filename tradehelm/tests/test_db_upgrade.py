@@ -93,6 +93,37 @@ def test_sqlite_upgrade_creates_decisions_table_when_missing(tmp_path):
     assert "decisions" in names
 
 
+def test_sqlite_upgrade_adds_decisions_action_column_when_missing(tmp_path):
+    db = tmp_path / "legacy_decision_action.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE decisions (
+            id INTEGER PRIMARY KEY,
+            ts DATETIME,
+            strategy_id TEXT,
+            symbol TEXT,
+            side TEXT,
+            qty INTEGER,
+            accepted INTEGER,
+            reason TEXT,
+            mode TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO decisions(id, strategy_id, symbol, side, qty, accepted, reason, mode) VALUES (1, 'orb', 'AAPL', 'BUY', 1, 1, 'legacy', 'PAPER')"
+    )
+    conn.commit()
+    conn.close()
+
+    sf = create_session_factory(f"sqlite:///{db}")
+    assert "action" in _columns(db, "decisions")
+    with sf() as s:
+        action = s.execute(text("SELECT action FROM decisions WHERE id=1")).scalar_one()
+        assert action == "UNKNOWN"
+
+
 def test_app_start_and_analytics_endpoints_work_after_upgrade(tmp_path):
     db = tmp_path / "legacy_api.db"
     _create_old_schema_db(db)

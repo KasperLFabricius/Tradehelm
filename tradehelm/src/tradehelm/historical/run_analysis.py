@@ -6,6 +6,11 @@ from datetime import datetime
 
 
 class RunAnalysisService:
+    def _normalize_action(self, raw_action: object) -> str:
+        if hasattr(raw_action, "value"):
+            raw_action = getattr(raw_action, "value")
+        return str(raw_action or "UNKNOWN").strip().upper()
+
     def build_equity_curve(self, trades: list[dict]) -> list[dict]:
         ordered = sorted(trades, key=lambda t: (t.get("exit_ts") or "", t.get("id") or 0))
         curve: list[dict] = []
@@ -62,6 +67,7 @@ class RunAnalysisService:
         by_reason: dict[str, int] = defaultdict(int)
         by_acceptance: dict[str, int] = {"accepted": 0, "rejected": 0}
         by_strategy: dict[str, int] = defaultdict(int)
+        accepted_entries_by_strategy: dict[str, int] = defaultdict(int)
         for decision in decisions:
             reason = str(decision.get("reason") or "unknown")
             by_reason[reason] += 1
@@ -69,10 +75,14 @@ class RunAnalysisService:
             by_acceptance["accepted" if accepted else "rejected"] += 1
             strategy_id = str(decision.get("strategy_id") or "unknown")
             by_strategy[strategy_id] += 1
+            action = self._normalize_action(decision.get("action"))
+            if accepted and action == "ENTRY":
+                accepted_entries_by_strategy[strategy_id] += 1
         return {
             "by_reason": dict(sorted(by_reason.items(), key=lambda item: item[0])),
             "by_acceptance": by_acceptance,
-            "trade_count_by_strategy": dict(sorted(by_strategy.items(), key=lambda item: item[0])),
+            "decision_count_by_strategy": dict(sorted(by_strategy.items(), key=lambda item: item[0])),
+            "trade_count_by_strategy": dict(sorted(accepted_entries_by_strategy.items(), key=lambda item: item[0])),
             "total_decisions": len(decisions),
         }
 
