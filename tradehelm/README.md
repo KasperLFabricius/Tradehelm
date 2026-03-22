@@ -73,6 +73,9 @@ $env:TWELVE_DATA_API_KEY=\"your_key_here\"
 - `GET /historical/cache` lists cache files
 - `POST /backtests/run` launches a cached-data backtest
 - `GET /backtests/runs` lists persisted backtest runs
+- `GET /backtests/{run_id}` returns run-scoped review artifacts (summary, trades, decisions)
+
+Backtest execution is isolated and reproducible: each run executes in its own temporary SQLite context, so existing replay/paper records in the main app DB cannot contaminate that run’s summary.
 
 ### Adjustment behavior
 - Intraday bars are fetched unadjusted and then adjusted client-side when `adjusted=true`.

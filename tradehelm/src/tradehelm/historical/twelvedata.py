@@ -27,21 +27,24 @@ class TwelveDataHistoricalProvider(HistoricalDataProvider):
     def __init__(
         self,
         api_key: str | None = None,
+        api_key_env: str = "TWELVE_DATA_API_KEY",
         base_url: str = "https://api.twelvedata.com",
         timeout_seconds: int = 20,
         max_retries: int = 2,
         bars_chunk_days: int = 30,
     ) -> None:
-        self.api_key = api_key or os.getenv("TWELVE_DATA_API_KEY")
+        self.api_key = api_key
+        self.api_key_env = api_key_env
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.bars_chunk_days = bars_chunk_days
 
     def _require_api_key(self) -> str:
-        if not self.api_key:
+        resolved = self.api_key or os.getenv(self.api_key_env)
+        if not resolved:
             raise HistoricalProviderError("missing_provider_key", "Twelve Data API key not configured.")
-        return self.api_key
+        return resolved
 
     def _request(self, path: str, params: dict[str, str]) -> dict:
         api_key = self._require_api_key()

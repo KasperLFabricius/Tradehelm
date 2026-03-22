@@ -147,6 +147,8 @@ class BacktestRunRecord(Base):
     status: Mapped[str] = mapped_column(String(24), default="PENDING")
     dataset_keys_csv: Mapped[str] = mapped_column(Text, default="")
     summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    trades_json: Mapped[str] = mapped_column(Text, default="[]")
+    decisions_json: Mapped[str] = mapped_column(Text, default="[]")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -179,6 +181,10 @@ def _upgrade_sqlite_schema(engine: Engine) -> None:
             "loaded_at": "ALTER TABLE replay_sessions ADD COLUMN loaded_at DATETIME",
             "started_at": "ALTER TABLE replay_sessions ADD COLUMN started_at DATETIME",
             "completed_at": "ALTER TABLE replay_sessions ADD COLUMN completed_at DATETIME",
+        },
+        "backtest_runs": {
+            "trades_json": "ALTER TABLE backtest_runs ADD COLUMN trades_json TEXT DEFAULT '[]'",
+            "decisions_json": "ALTER TABLE backtest_runs ADD COLUMN decisions_json TEXT DEFAULT '[]'",
         },
     }
 

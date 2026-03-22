@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import date
 
@@ -65,6 +66,17 @@ class BacktestLaunchRequest(BaseModel):
     adjusted: bool = True
 
 
+def build_historical_stack(session_factory, config: AppConfig) -> tuple[HistoricalCache, HistoricalService, BacktestRunner]:
+    cache = HistoricalCache(session_factory, cache_dir=config.historical.cache_dir)
+    provider = TwelveDataHistoricalProvider(
+        api_key=os.getenv(config.historical.api_key_env),
+        api_key_env=config.historical.api_key_env,
+    )
+    service = HistoricalService(cache=cache, provider=provider)
+    runner = BacktestRunner(session_factory, cache, config)
+    return cache, service, runner
+
+
 def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEngine:
     session_factory = create_session_factory(db_url)
     state_store = PersistedStateStore(session_factory)
@@ -79,13 +91,18 @@ def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEng
 
 def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
     engine = create_engine_instance(db_url)
-    cache = HistoricalCache(engine.session_factory, cache_dir=engine.config.historical.cache_dir)
-    historical_service = HistoricalService(cache=cache, provider=TwelveDataHistoricalProvider())
-    backtest_runner = BacktestRunner(engine.session_factory, cache)
+    cache: HistoricalCache | None = None
+    historical_service: HistoricalService | None = None
+    backtest_runner: BacktestRunner | None = None
+
+    def rebuild_historical_services() -> None:
+        nonlocal cache, historical_service, backtest_runner
+        cache, historical_service, backtest_runner = build_historical_stack(engine.session_factory, engine.config)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         engine.startup()
+        rebuild_historical_services()
         yield
         engine.shutdown()
 
@@ -192,7 +209,9 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
     @app.post("/config")
     def set_config(req: ConfigRequest) -> dict:
         config = AppConfig.model_validate(req.config)
-        return engine.apply_config(config)
+        result = engine.apply_config(config)
+        rebuild_historical_services()
+        return result
 
     @app.post("/replay/load")
     def replay_load(req: ReplayLoadRequest) -> dict:
@@ -237,6 +256,7 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
 
     @app.post("/historical/fetch")
     def historical_fetch(req: HistoricalFetchRequest):
+        assert historical_service is not None
         try:
             result = historical_service.fetch_and_cache(
                 HistoricalRequest(
@@ -259,14 +279,18 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
 
     @app.get("/historical/cache")
     def historical_cache() -> list[dict]:
+        assert cache is not None
         return cache.list_cache_files()
 
     @app.get("/historical/datasets")
     def historical_datasets() -> list[dict]:
+        assert cache is not None
         return cache.list_datasets()
 
     @app.post("/backtests/run")
     def backtests_run(req: BacktestLaunchRequest):
+        assert historical_service is not None
+        assert backtest_runner is not None
         try:
             historical_service.validate_request(
                 HistoricalRequest(
@@ -300,7 +324,19 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
 
     @app.get("/backtests/runs")
     def backtests_runs() -> list[dict]:
+        assert backtest_runner is not None
         return backtest_runner.list_runs()
+
+    @app.get("/backtests/{run_id}")
+    def backtests_run_detail(run_id: int):
+        assert backtest_runner is not None
+        payload = backtest_runner.get_run(run_id)
+        if payload is None:
+            return JSONResponse(
+                status_code=404,
+                content=ApiError(error={"code": "backtest_run_not_found", "message": "Backtest run not found."}).model_dump(),
+            )
+        return payload
 
     return app
 
