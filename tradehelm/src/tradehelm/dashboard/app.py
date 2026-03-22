@@ -87,6 +87,35 @@ def render() -> None:
     if r3.button("Stop Replay"):
         notify_action(call_api(api, "POST", "/replay/stop"), "Replay stop requested.")
 
+    st.subheader("Historical Backtesting (Twelve Data, US, 5min)")
+    symbols_text = st.text_input("Tickers (comma-separated)", value="AAPL,MSFT")
+    h1, h2, h3 = st.columns(3)
+    start_date = h1.date_input("Start date")
+    end_date = h2.date_input("End date")
+    interval = h3.selectbox("Interval", ["5min"], index=0)
+    adjusted = st.toggle("Adjusted intraday bars (split-adjusted)", value=True)
+    symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
+    request_payload = {
+        "symbols": symbols,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "interval": interval,
+        "adjusted": adjusted,
+        "use_existing_cache": True,
+    }
+    hb1, hb2 = st.columns(2)
+    if hb1.button("Fetch / Cache Historical Data"):
+        notify_action(call_api(api, "POST", "/historical/fetch", request_payload), "Historical data fetched/cached.")
+    if hb2.button("Run Cached Backtest"):
+        run_payload = dict(request_payload)
+        run_payload.pop("use_existing_cache", None)
+        notify_action(call_api(api, "POST", "/backtests/run", run_payload), "Backtest run complete.")
+
+    st.write("Cached Datasets")
+    st.dataframe(call_api(api, "GET", "/historical/datasets").payload or [])
+    st.write("Backtest Runs")
+    st.dataframe(call_api(api, "GET", "/backtests/runs").payload or [])
+
     st.subheader("Strategies")
     strategies = call_api(api, "GET", "/strategies")
     if strategies.ok:

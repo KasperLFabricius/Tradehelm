@@ -44,6 +44,61 @@ streamlit run src/tradehelm/dashboard/app.py
 - `STOPPED`: requests replay stop and exits worker loop.
 - `KILL_SWITCH`: requests replay stop, cancels working simulated orders, and flattens simulated positions.
 
+## Historical backtesting (v1 scope)
+
+TradeHelm now supports local-first historical ingestion/caching and cached-data backtests with **Twelve Data** as the first provider.
+
+### Scope in this PR
+- Provider: Twelve Data only
+- Market: US equities only (symbol validation is intentionally conservative)
+- Interval: `5min` only
+- Backtests run from local cached snapshots (no live fetch during run)
+
+### Twelve Data API key
+Set an environment variable before starting API/dashboard:
+
+```powershell
+$env:TWELVE_DATA_API_KEY=\"your_key_here\"
+```
+
+### Historical API workflow
+- `POST /historical/fetch` (or `POST /historical/prepare`)
+  - Request shape:
+    - `symbols: list[str]`
+    - `start_date: YYYY-MM-DD`
+    - `end_date: YYYY-MM-DD`
+    - `interval: \"5min\"`
+    - `adjusted: bool`
+- `GET /historical/datasets` lists cached datasets
+- `GET /historical/cache` lists cache files
+- `POST /backtests/run` launches a cached-data backtest
+- `GET /backtests/runs` lists persisted backtest runs
+- `GET /backtests/{run_id}` returns run-scoped review artifacts (summary, trades, decisions)
+
+Backtest execution is isolated and reproducible: each run executes in its own temporary SQLite context, so existing replay/paper records in the main app DB cannot contaminate that run’s summary.
+
+### Adjustment behavior
+- Intraday bars are fetched unadjusted and then adjusted client-side when `adjusted=true`.
+- Split adjustment is enabled in v1 and applied to pre-ex-date bars.
+- Dividend adjustment is implemented as optional/simple logic in code but disabled by default for ingestion (`adjusted=true` currently means split-adjusted intraday bars).
+- Results should be treated as deterministic diagnostics, not accounting-grade corporate-action normalization.
+
+### Local cache behavior
+- Cached under `historical_cache/` by default.
+- Deterministic cache key includes provider, symbol, interval, date range, and adjusted flag.
+- Each dataset stores:
+  - `bars.csv`
+  - `splits.csv`
+  - `dividends.csv`
+- Metadata index is persisted in SQLite (`historical_datasets` table).
+
+### Current limitations
+- No non-US symbols
+- No intervals other than `5min`
+- No multi-provider routing
+- No cloud storage or optimizer/portfolio optimizer
+- No live broker integration
+
 
 ## Replay review analytics (paper-trading)
 TradeHelm now includes a deterministic replay-review layer intended for strategy diagnostics (not strategy optimization yet).

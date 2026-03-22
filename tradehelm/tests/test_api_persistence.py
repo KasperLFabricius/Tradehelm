@@ -102,3 +102,51 @@ def test_analytics_reset_requires_structured_confirmation_error(tmp_path):
         assert response.status_code == 400
         payload = response.json()
         assert payload["error"]["code"] == "reset_confirmation_required"
+
+
+def test_historical_fetch_rejects_unsupported_interval(tmp_path):
+    with _client_for(tmp_path / "hist_interval.db") as client:
+        response = client.post(
+            "/historical/fetch",
+            json={
+                "symbols": ["AAPL"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-02",
+                "interval": "1min",
+                "adjusted": True,
+            },
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "unsupported_interval"
+
+
+def test_historical_fetch_rejects_invalid_dates(tmp_path):
+    with _client_for(tmp_path / "hist_dates.db") as client:
+        response = client.post(
+            "/historical/fetch",
+            json={
+                "symbols": ["AAPL"],
+                "start_date": "2026-01-03",
+                "end_date": "2026-01-02",
+                "interval": "5min",
+                "adjusted": True,
+            },
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_date_range"
+
+
+def test_backtest_requires_cached_dataset(tmp_path):
+    with _client_for(tmp_path / "bt_missing_cache.db") as client:
+        response = client.post(
+            "/backtests/run",
+            json={
+                "symbols": ["AAPL"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-01-02",
+                "interval": "5min",
+                "adjusted": True,
+            },
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "no_cached_dataset_available"

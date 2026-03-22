@@ -48,8 +48,16 @@ class StrategiesConfig(BaseModel):
     vwap: VwapStrategyConfig = VwapStrategyConfig()
 
 
+class HistoricalProviderConfig(BaseModel):
+    name: str = "twelvedata"
+    api_key_env: str = "TWELVE_DATA_API_KEY"
+    cache_dir: str = "./historical_cache"
+    default_adjusted: bool = True
+
+
 class AppConfig(BaseModel):
     replay_speed: float = Field(default=1.0, ge=0.1, le=50)
     friction: FrictionConfig = FrictionConfig()
     risk: RiskConfig = RiskConfig()
     strategies: StrategiesConfig = StrategiesConfig()
+    historical: HistoricalProviderConfig = HistoricalProviderConfig()
