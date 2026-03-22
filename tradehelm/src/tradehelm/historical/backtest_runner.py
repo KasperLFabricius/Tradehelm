@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 import tempfile
+from pathlib import Path
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import sessionmaker
@@ -107,8 +108,9 @@ class BacktestRunner:
             session.commit()
             run_id = run.id
 
-        with tempfile.NamedTemporaryFile(prefix="tradehelm_bt_", suffix=".db", delete=True) as tf:
-            run_db_url = f"sqlite:///{tf.name}"
+        with tempfile.TemporaryDirectory(prefix="tradehelm_bt_") as tmp_dir:
+            run_db_path = Path(tmp_dir) / "run.db"
+            run_db_url = f"sqlite:///{run_db_path}"
             run_session_factory = create_session_factory(run_db_url)
             engine = self._build_engine(run_session_factory)
             engine.startup()

@@ -1,7 +1,9 @@
 from datetime import date, datetime, timezone
 import json
 import sqlite3
+from pathlib import Path
 
+import tradehelm.historical.backtest_runner as backtest_runner_module
 from tradehelm.config.models import AppConfig
 from tradehelm.control_api.app import build_historical_stack
 from tradehelm.historical.backtest_runner import BacktestRunner
@@ -249,3 +251,37 @@ def test_compare_runs_returns_metrics(tmp_path):
     comparison = runner.compare_runs([1, 2])
     assert len(comparison["runs"]) == 2
     assert comparison["runs"][0]["trade_count"] >= 1
+
+
+def test_backtest_uses_windows_safe_temp_db_path(tmp_path, monkeypatch):
+    session_factory = create_session_factory(f"sqlite:///{tmp_path / 'windows_safe.db'}")
+    cache = HistoricalCache(session_factory, cache_dir=str(tmp_path / "cache"))
+    cache.write_dataset(
+        provider="twelvedata",
+        symbol="AAPL",
+        interval="5min",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 3),
+        adjusted=False,
+        bars=[Bar(ts=datetime(2026, 1, 2, 14, 30, tzinfo=timezone.utc), symbol="AAPL", open=1, high=1, low=1, close=1, volume=1)],
+        splits=[],
+        dividends=[],
+    )
+
+    observed_run_db_urls: list[str] = []
+    original_create_session_factory = backtest_runner_module.create_session_factory
+
+    def capture_create_session_factory(db_url: str):
+        observed_run_db_urls.append(db_url)
+        return original_create_session_factory(db_url)
+
+    monkeypatch.setattr(backtest_runner_module, "create_session_factory", capture_create_session_factory)
+
+    runner = BacktestRunner(session_factory, cache, AppConfig())
+    result = runner.run("twelvedata", ["AAPL"], "2026-01-01", "2026-01-03", "5min", False)
+
+    assert result["status"] == "COMPLETED"
+    assert observed_run_db_urls
+    run_db_path = Path(observed_run_db_urls[0].replace("sqlite:///", ""))
+    assert run_db_path.name == "run.db"
+    assert not run_db_path.parent.exists()
