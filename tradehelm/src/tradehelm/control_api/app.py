@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import date
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +11,11 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 
 from tradehelm.config.models import AppConfig
+from tradehelm.historical.backtest_runner import BacktestRunner
+from tradehelm.historical.cache import HistoricalCache
+from tradehelm.historical.interfaces import SUPPORTED_INTERVAL
+from tradehelm.historical.service import HistoricalRequest, HistoricalService
+from tradehelm.historical.twelvedata import TwelveDataHistoricalProvider
 from tradehelm.persistence.db import create_session_factory
 from tradehelm.persistence.state_store import PersistedStateStore
 from tradehelm.strategies.noop import NoOpStrategy
@@ -42,6 +48,23 @@ class ResetRequest(BaseModel):
     confirm: bool = False
 
 
+class HistoricalFetchRequest(BaseModel):
+    symbols: list[str]
+    start_date: date
+    end_date: date
+    interval: str = SUPPORTED_INTERVAL
+    adjusted: bool = True
+    use_existing_cache: bool = True
+
+
+class BacktestLaunchRequest(BaseModel):
+    symbols: list[str]
+    start_date: date
+    end_date: date
+    interval: str = SUPPORTED_INTERVAL
+    adjusted: bool = True
+
+
 def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEngine:
     session_factory = create_session_factory(db_url)
     state_store = PersistedStateStore(session_factory)
@@ -56,6 +79,9 @@ def create_engine_instance(db_url: str = "sqlite:///tradehelm.db") -> TradingEng
 
 def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
     engine = create_engine_instance(db_url)
+    cache = HistoricalCache(engine.session_factory, cache_dir=engine.config.historical.cache_dir)
+    historical_service = HistoricalService(cache=cache, provider=TwelveDataHistoricalProvider())
+    backtest_runner = BacktestRunner(engine.session_factory, cache)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -208,6 +234,73 @@ def create_app(db_url: str = "sqlite:///tradehelm.db") -> FastAPI:
             payload = ApiError(error={"code": "reset_confirmation_required", "message": "Reset requires confirm=true."}).model_dump()
             return JSONResponse(status_code=400, content=payload)
         return {"cleared": engine.reset_paper_records()}
+
+    @app.post("/historical/fetch")
+    def historical_fetch(req: HistoricalFetchRequest):
+        try:
+            result = historical_service.fetch_and_cache(
+                HistoricalRequest(
+                    symbols=req.symbols,
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                    interval=req.interval,
+                    adjusted=req.adjusted,
+                ),
+                use_existing=req.use_existing_cache,
+            )
+            return result
+        except Exception as exc:
+            status, payload = historical_service.map_error(exc)
+            return JSONResponse(status_code=status, content=ApiError(error=payload).model_dump())
+
+    @app.post("/historical/prepare")
+    def historical_prepare(req: HistoricalFetchRequest):
+        return historical_fetch(req)
+
+    @app.get("/historical/cache")
+    def historical_cache() -> list[dict]:
+        return cache.list_cache_files()
+
+    @app.get("/historical/datasets")
+    def historical_datasets() -> list[dict]:
+        return cache.list_datasets()
+
+    @app.post("/backtests/run")
+    def backtests_run(req: BacktestLaunchRequest):
+        try:
+            historical_service.validate_request(
+                HistoricalRequest(
+                    symbols=req.symbols,
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                    interval=req.interval,
+                    adjusted=req.adjusted,
+                )
+            )
+            symbols = sorted({s.strip().upper() for s in req.symbols if s.strip()})
+            return backtest_runner.run(
+                provider=historical_service.provider.name,
+                symbols=symbols,
+                start_date=req.start_date.isoformat(),
+                end_date=req.end_date.isoformat(),
+                interval=req.interval,
+                adjusted=req.adjusted,
+            )
+        except ValueError as exc:
+            if str(exc).startswith("no_cached_dataset_available:"):
+                symbol = str(exc).split(":", 1)[1]
+                payload = ApiError(
+                    error={"code": "no_cached_dataset_available", "message": f"No cached dataset available for {symbol}."}
+                ).model_dump()
+                return JSONResponse(status_code=400, content=payload)
+            raise
+        except Exception as exc:
+            status, payload = historical_service.map_error(exc)
+            return JSONResponse(status_code=status, content=ApiError(error=payload).model_dump())
+
+    @app.get("/backtests/runs")
+    def backtests_runs() -> list[dict]:
+        return backtest_runner.list_runs()
 
     return app
 

@@ -119,6 +119,39 @@ class RuntimeMetadataRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class HistoricalDatasetRecord(Base):
+    __tablename__ = "historical_datasets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(128), unique=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(16))
+    interval: Mapped[str] = mapped_column(String(16))
+    start_date: Mapped[str] = mapped_column(String(16))
+    end_date: Mapped[str] = mapped_column(String(16))
+    adjusted: Mapped[int] = mapped_column(Integer, default=0)
+    bars_path: Mapped[str] = mapped_column(String(500))
+    splits_path: Mapped[str] = mapped_column(String(500))
+    dividends_path: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BacktestRunRecord(Base):
+    __tablename__ = "backtest_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    symbols_csv: Mapped[str] = mapped_column(String(500))
+    interval: Mapped[str] = mapped_column(String(16))
+    start_date: Mapped[str] = mapped_column(String(16))
+    end_date: Mapped[str] = mapped_column(String(16))
+    adjusted: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    dataset_keys_csv: Mapped[str] = mapped_column(Text, default="")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 def _sqlite_table_columns(conn, table: str) -> set[str]:
     rows = conn.execute(text(f"PRAGMA table_info({table})")).all()
     return {str(row[1]) for row in rows}
