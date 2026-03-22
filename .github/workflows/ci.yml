@@ -10,6 +10,9 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12"]
+    defaults:
+      run:
+        working-directory: tradehelm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
