@@ -83,6 +83,22 @@ def test_oversell_raises():
         ledger.sell("X", 101, 200.0, 2026)
 
 
+def test_close_year_is_idempotent():
+    ledger = _ledger()
+    ledger.add_dividend(-30_000.0, 2025)
+    assert ledger.close_year(2025) == pytest.approx(0.0)
+    assert ledger.carried_loss == pytest.approx(30_000.0)
+    # Re-closing must not double-count the loss.
+    assert ledger.close_year(2025) == pytest.approx(0.0)
+    assert ledger.carried_loss == pytest.approx(30_000.0)
+
+    ledger.add_dividend(100_000.0, 2026)
+    first = ledger.close_year(2026)  # taxable 70,000 (after 30k carry)
+    second = ledger.close_year(2026)
+    assert first == pytest.approx(second)
+    assert ledger.carried_loss == pytest.approx(0.0)  # not re-consumed
+
+
 def test_missing_threshold_year_raises():
     ledger = _ledger()
     ledger.add_dividend(100_000.0, 2099)

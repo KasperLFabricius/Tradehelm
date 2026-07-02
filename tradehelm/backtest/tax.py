@@ -39,6 +39,7 @@ class DanishTaxLedger:
         self.rate_high = rate_high
         self._basis: dict[str, tuple[float, float]] = {}  # symbol -> (shares, total_cost_dkk)
         self._realized: dict[int, float] = defaultdict(float)  # year -> net realized DKK
+        self._closed: dict[int, float] = {}  # settled year -> tax due (idempotency)
         self.carried_loss = 0.0  # unused prior-year losses (non-negative)
 
     def buy(self, symbol: str, shares: float, price_dkk: float) -> None:
@@ -74,14 +75,28 @@ class DanishTaxLedger:
         return self._realized.get(year, 0.0)
 
     def close_year(self, year: int) -> float:
-        """Finalize a calendar year: update carried losses, return the DKK tax due."""
+        """Finalize a calendar year: update carried losses, return the DKK tax due.
+
+        Idempotent: settling an already-closed year returns the same tax without
+        touching carried losses again (so a report replaying settlement is safe).
+        """
+        if year in self._closed:
+            return self._closed[year]
+
         net = self._realized.get(year, 0.0)
         if net < 0:
             self.carried_loss += -net
-            return 0.0
-        taxable = net - self.carried_loss
-        if taxable <= 0:
+            tax = 0.0
+        elif net - self.carried_loss <= 0:
             self.carried_loss -= net  # this year's gain partly consumed the carry
-            return 0.0
-        self.carried_loss = 0.0
-        return progressive_tax(taxable, self.threshold(year), self.rate_low, self.rate_high)
+            tax = 0.0
+        else:
+            # Compute (may raise on an unconfigured year) BEFORE mutating carry, so a
+            # failure leaves the ledger unchanged.
+            tax = progressive_tax(
+                net - self.carried_loss, self.threshold(year), self.rate_low, self.rate_high
+            )
+            self.carried_loss = 0.0
+
+        self._closed[year] = tax
+        return tax
