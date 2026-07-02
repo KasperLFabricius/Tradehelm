@@ -93,6 +93,32 @@ def test_non_mapping_config_file_raises(tmp_path):
         load_app_config(scalar)
 
 
+def test_empty_mapping_config_raises(tmp_path):
+    f = tmp_path / "braces.yaml"
+    f.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="required section"):
+        load_app_config(f)
+
+
+def test_config_missing_financial_section_raises(tmp_path):
+    f = tmp_path / "partial.yaml"
+    # Has costs + tax but omits risk (and broker/data/storage, which is allowed).
+    f.write_text(
+        "costs: {commission_rate_us: 0.0008}\ntax: {rate_low: 0.27}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="risk"):
+        load_app_config(f)
+
+
+def test_config_empty_financial_section_raises(tmp_path):
+    f = tmp_path / "emptysec.yaml"
+    # costs present but empty must be rejected too.
+    f.write_text("costs: {}\ntax: {rate_low: 0.27}\nrisk: {max_positions: 3}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="costs"):
+        load_app_config(f)
+
+
 def test_secrets_read_from_environment(monkeypatch):
     monkeypatch.setenv("TRADEHELM_SAXO_APP_KEY", "sim-key-123")
     secrets = Secrets(_env_file=None)
