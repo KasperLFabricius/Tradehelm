@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from .calendar import TradingCalendar
-from .schema import ensure_bar_frame
+from .schema import DataGapError, ensure_bar_frame
 from .sources import BarSource
 
 
@@ -66,6 +66,18 @@ class ParquetCache:
             return len(self._calendar.missing_sessions(df.index, start_ts, end_ts)) == 0
         return True
 
+    def _interior_gaps(self, df: pd.DataFrame) -> pd.DatetimeIndex:
+        """Missing sessions strictly WITHIN the frame's own span.
+
+        This is the genuine-corruption signal (a partial response or manual edit
+        dropped a day). It deliberately ignores head/tail truncation relative to a
+        requested range, because a symbol legitimately has no bars before its IPO,
+        after a delisting, or for today's not-yet-published session.
+        """
+        if self._calendar is None or len(df) == 0:
+            return pd.DatetimeIndex([])
+        return self._calendar.missing_sessions(df.index, df.index.min(), df.index.max())
+
     def get_or_fetch(
         self,
         symbol: str,
@@ -81,6 +93,11 @@ class ParquetCache:
         with a calendar, it must also contain every trading session in the range
         (an interior gap forces one refetch). A single fetch is performed - we do
         not loop if the source itself cannot fill the range.
+
+        After a fetch, the merged frame is validated for INTERIOR session gaps and
+        raises DataGapError if any remain (fail loud rather than silently return
+        holey data). Head/tail truncation - IPO, delisting, today's unpublished
+        bar - is NOT treated as a gap.
         """
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
@@ -88,4 +105,10 @@ class ParquetCache:
         if cached is not None and self._covers(cached, start_ts, end_ts):
             return cached.loc[start_ts:end_ts]
         merged = self.update(symbol, source.daily_bars(symbol, start, end))
+        gaps = self._interior_gaps(merged)
+        if len(gaps):
+            raise DataGapError(
+                f"{symbol}: {len(gaps)} interior session gap(s) after fetch "
+                f"(e.g. {gaps[0].date()}); refusing to return holey data"
+            )
         return merged.loc[start_ts:end_ts]

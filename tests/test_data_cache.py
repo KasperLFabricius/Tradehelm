@@ -1,8 +1,9 @@
 """Tests for the Parquet bar cache (tradehelm.data.cache)."""
 
 import pandas as pd
+import pytest
 
-from tradehelm.data import BAR_COLUMNS, ParquetCache, TradingCalendar
+from tradehelm.data import BAR_COLUMNS, DataGapError, ParquetCache, TradingCalendar
 
 
 def _frame(dates):
@@ -122,3 +123,32 @@ def test_endpoint_only_coverage_without_calendar(tmp_path):
 
     cache.get_or_fetch("X", "2021-01-04", "2021-01-15", Src())
     assert calls["n"] == 0  # endpoint-only check is satisfied (documented weaker guarantee)
+
+
+def test_get_or_fetch_raises_on_persistent_interior_gap(tmp_path):
+    cal = TradingCalendar()
+    sessions = cal.sessions("2021-01-04", "2021-01-15")
+
+    class GappySrc:
+        def daily_bars(self, symbol, start, end):
+            return _bars_on(sessions.delete(3))  # source itself returns an interior gap
+
+    cache = ParquetCache(tmp_path, calendar=cal)
+    with pytest.raises(DataGapError):
+        cache.get_or_fetch("X", "2021-01-04", "2021-01-15", GappySrc())
+
+
+def test_get_or_fetch_allows_tail_truncation(tmp_path):
+    # A delisted / short-history symbol legitimately ends before the requested
+    # end: contiguous data, no interior gap -> returned, not an error.
+    cal = TradingCalendar()
+    full = cal.sessions("2021-01-04", "2021-01-29")
+    available = full[:8]
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            return _bars_on(available)
+
+    cache = ParquetCache(tmp_path, calendar=cal)
+    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
+    assert len(out) == 8
