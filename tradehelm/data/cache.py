@@ -73,19 +73,6 @@ class ParquetCache:
             return len(self._calendar.missing_sessions(df.index, expected[0], expected[-1])) == 0
         return df.index.min() <= start_ts and df.index.max() >= end_ts
 
-    def _plan_fetch(
-        self, cached: pd.DataFrame | None, start_ts: pd.Timestamp, end_ts: pd.Timestamp
-    ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-        """Windows to fetch. With a calendar, only the missing sessions (so a
-        daily run extending yesterday's cache fetches just today, not the whole
-        history). Without one, refetch the full range (safe fallback)."""
-        if cached is None or len(cached) == 0 or self._calendar is None:
-            return [(start_ts, end_ts)]
-        missing = self._calendar.sessions(start_ts, end_ts).difference(cached.index)
-        if len(missing) == 0:
-            return [(start_ts, end_ts)]  # safety; normally already "covered"
-        return [(missing.min(), missing.max())]
-
     def _requested_interior_gaps(
         self, merged: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp
     ) -> pd.DatetimeIndex:
@@ -116,16 +103,18 @@ class ParquetCache:
         """Return bars for [start, end], fetching + caching only if not covered.
 
         Coverage is session-based (calendar cache): the cache must contain every
-        trading session in the range. When a fetch is needed, only the missing
-        sessions are pulled and merged - so a live symbol fetches just its new tail,
-        and a delisted one does a single cheap empty probe of its dead tail (which
-        is tolerated). Coverage is never inferred from a stored marker, so a
-        request can never be served from partial/empty data.
+        trading session in the range. On a miss we re-fetch the FULL span fresh -
+        extended to cover any existing cached range - and let the fresh rows
+        overwrite the cached ones. adj_close is retroactively re-adjusted by splits
+        and dividends, so this is the only way to keep adjusted prices internally
+        consistent; merging a new tail onto cached adj_close would leave stale
+        pre-event values (a future raw-OHLC + corporate-actions store could restore
+        incremental fetching soundly).
 
         The merged frame is validated for INTERIOR session gaps and raises
         DataGapError BEFORE writing (a failed check never poisons the cache).
         Head/tail truncation - IPO, delisting, today's unpublished bar - is NOT a
-        gap; an empty extension of an already-cached symbol is tolerated.
+        gap; an empty fetch for an already-cached symbol is tolerated.
         """
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
@@ -133,20 +122,24 @@ class ParquetCache:
         if cached is not None and self._covers(cached, start_ts, end_ts):
             return cached.loc[start_ts:end_ts]
 
+        if cached is None:
+            fetch_start, fetch_end = start_ts, end_ts
+        else:
+            fetch_start = min(start_ts, cached.index.min())
+            fetch_end = max(end_ts, cached.index.max())
+
         frames = [] if cached is None else [cached]
-        for fetch_start, fetch_end in self._plan_fetch(cached, start_ts, end_ts):
-            try:
-                frames.append(
-                    ensure_bar_frame(
-                        source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol
-                    )
-                )
-            except EmptyDataError:
-                # Tolerated only for an already-cached symbol (a delisted dead tail);
-                # a first fetch with no data is a genuine failure. The requested-range
-                # gap check below still fails loud if this leaves an interior hole.
-                if cached is None:
-                    raise
+        try:
+            # Appended last, so fresh rows win on overlap (consistent adj_close).
+            frames.append(
+                ensure_bar_frame(source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol)
+            )
+        except EmptyDataError:
+            # Tolerated only for an already-cached symbol (transient empty / dead
+            # tail); a first fetch with no data is a genuine failure. The gap check
+            # below still fails loud if this leaves an interior hole.
+            if cached is None:
+                raise
 
         combined = pd.concat(frames)
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()

@@ -146,32 +146,28 @@ def test_get_or_fetch_raises_on_persistent_interior_gap(tmp_path):
     assert cache.read("X") is None
 
 
-def test_disjoint_fetches_do_not_falsely_cover_the_gap(tmp_path):
-    # Fetching two non-overlapping ranges must NOT make an unfetched middle range
-    # look covered (a stored min/max window would; session-based coverage does not).
+def test_extension_refetches_full_span_for_consistent_adj_close(tmp_path):
+    # Extending after a corporate action re-fetches the full span so historical
+    # adj_close is refreshed - no stale pre-event adjusted prices left behind.
     cal = TradingCalendar()
-    jan = cal.sessions("2021-01-04", "2021-01-15")
-    mar = cal.sessions("2021-03-01", "2021-03-12")
+    days = cal.sessions("2021-01-04", "2021-01-15")
+    cache = ParquetCache(tmp_path, calendar=cal)
+    first = _bars_on(days[:6])
+    first["adj_close"] = 1.0
+    cache.write("X", first)  # cached with old adjusted prices
+
+    seen = {}
 
     class Src:
         def daily_bars(self, symbol, start, end):
-            return _bars_on(cal.sessions(start, end))
+            seen["start"] = pd.Timestamp(start)
+            fresh = _bars_on(days)  # full span, retroactively re-adjusted
+            fresh["adj_close"] = 2.0
+            return fresh
 
-    cache = ParquetCache(tmp_path, calendar=cal)
-    cache.get_or_fetch("X", "2021-01-04", "2021-01-15", Src())
-    cache.get_or_fetch("X", "2021-03-01", "2021-03-12", Src())
-
-    calls = {"n": 0}
-
-    class CountingSrc:
-        def daily_bars(self, symbol, start, end):
-            calls["n"] += 1
-            return _bars_on(cal.sessions(start, end))
-
-    out = cache.get_or_fetch("X", "2021-02-01", "2021-02-12", CountingSrc())  # the gap
-    assert calls["n"] == 1  # the unfetched middle range IS fetched, not served empty
-    assert len(out) == len(cal.sessions("2021-02-01", "2021-02-12"))
-    assert len(jan) and len(mar)  # sanity
+    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-15", Src())
+    assert seen["start"] == days[0]  # full span re-fetched, not just the new tail
+    assert (out["adj_close"] == 2.0).all()  # no stale 1.0 from the cached rows
 
 
 def test_partial_interior_refill_still_raises(tmp_path):
@@ -206,18 +202,14 @@ def test_empty_interior_refill_raises(tmp_path):
 
 
 def test_request_starting_inside_a_hole_raises(tmp_path):
-    # Jan and Mar cached separately; a request for Feb->early-Mar whose Feb refill
-    # is empty must fail loud even though the slice's available rows (March) are
-    # contiguous. The Feb hole is interior to the Jan..Mar cached span.
+    # A cache with a disjoint Jan + Mar (no Feb); a request for Feb->early-Mar whose
+    # fetch returns no Feb must fail loud even though the slice's available rows
+    # (March) are contiguous. The Feb hole is interior to the Jan..Mar cached span.
     cal = TradingCalendar()
-
-    class JanMarSrc:
-        def daily_bars(self, symbol, start, end):
-            return _bars_on(cal.sessions(start, end))
-
+    jan = cal.sessions("2021-01-04", "2021-01-29")
+    mar = cal.sessions("2021-03-01", "2021-03-31")
     cache = ParquetCache(tmp_path, calendar=cal)
-    cache.get_or_fetch("X", "2021-01-04", "2021-01-29", JanMarSrc())
-    cache.get_or_fetch("X", "2021-03-01", "2021-03-31", JanMarSrc())
+    cache.write("X", _bars_on(jan.append(mar)))  # disjoint: Jan and Mar, no Feb
 
     class EmptyFebSrc:
         def daily_bars(self, symbol, start, end):
@@ -227,22 +219,20 @@ def test_request_starting_inside_a_hole_raises(tmp_path):
         cache.get_or_fetch("X", "2021-02-15", "2021-03-05", EmptyFebSrc())
 
 
-def test_extension_tolerates_empty_tail_for_cached_symbol(tmp_path):
+def test_extension_tolerates_empty_fetch_for_cached_symbol(tmp_path):
+    # An empty fetch when extending an already-cached symbol (transient empty /
+    # dead tail) returns the cached history rather than raising.
     cal = TradingCalendar()
-    full = cal.sessions("2021-01-04", "2021-01-29")
-    available = full[:8]
-
-    class Src:
-        def daily_bars(self, symbol, start, end):
-            if pd.Timestamp(start) <= full[7]:
-                return _bars_on(available)
-            raise EmptyDataError("delisted; no more bars")  # dead tail
-
+    days = cal.sessions("2021-01-04", "2021-01-13")
     cache = ParquetCache(tmp_path, calendar=cal)
-    cache.get_or_fetch("X", "2021-01-04", "2021-01-13", Src())  # establish cache + window
-    # Extending into the dead tail must not raise; returns the cached history.
-    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
-    assert len(out) == 8
+    cache.write("X", _bars_on(days))
+
+    class EmptySrc:
+        def daily_bars(self, symbol, start, end):
+            raise EmptyDataError("no more bars")
+
+    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-20", EmptySrc())
+    assert len(out) == len(days)
 
 
 def test_get_or_fetch_allows_tail_truncation(tmp_path):
@@ -278,21 +268,3 @@ def test_covers_snaps_non_session_bounds_to_sessions(tmp_path):
 
     cache.get_or_fetch("X", "2021-01-02", "2021-01-16", Src())  # Sat..Sat bounds
     assert calls["n"] == 0
-
-
-def test_get_or_fetch_incrementally_fetches_only_missing_tail(tmp_path):
-    cal = TradingCalendar()
-    sessions = cal.sessions("2021-01-04", "2021-01-29")
-    cache = ParquetCache(tmp_path, calendar=cal)
-    cache.write("X", _bars_on(sessions[:8]))  # cached through the 8th session
-
-    seen = {}
-
-    class Src:
-        def daily_bars(self, symbol, start, end):
-            seen["start"] = pd.Timestamp(start)
-            return _bars_on(cal.sessions(start, end))
-
-    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
-    assert seen["start"] == sessions[8]  # only the missing tail was fetched
-    assert len(out) == len(sessions)
