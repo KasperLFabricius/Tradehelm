@@ -22,8 +22,18 @@ def main() -> int:
     context = ssl.create_default_context()
     with urllib.request.urlopen(SOURCE_URL, context=context, timeout=60) as resp:  # noqa: S310
         data = resp.read()
-    dest.write_bytes(data)
-    universe = Universe.from_csv(dest)  # validate it parses
+
+    # Validate into a temp file first; only replace the bundled dataset once it
+    # parses, so a malformed/schema-changed download can't corrupt the committed
+    # file and break Universe.default() / data pulls.
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_bytes(data)
+    try:
+        universe = Universe.from_csv(tmp)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    tmp.replace(dest)
     print(f"wrote {dest} ({len(data)} bytes, {len(universe.all_symbols())} tickers)")
     return 0
 
