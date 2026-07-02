@@ -26,25 +26,40 @@ class Window:
     test_end: pd.Timestamp
 
 
+def holdout_range(end, holdout_years: int = 2) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """The final untouched holdout span [end - holdout_years, end] (Gate 3G)."""
+    end = pd.Timestamp(end)
+    return end - pd.DateOffset(years=holdout_years), end
+
+
 def walk_forward_windows(
     start,
     end,
     train_years: int = 3,
     test_years: int = 1,
     purge_days: int = 5,
+    holdout_years: int = 2,
 ) -> list[Window]:
+    """Rolling train/test windows over [start, end - holdout_years].
+
+    The final holdout_years are RESERVED (never appear in a test window) so the
+    Gate 3G holdout stays untouched even when callers pass the full data range as
+    end. Pass holdout_years=0 to use all data for walk-forward.
+    """
     if train_years <= 0 or test_years <= 0:
         raise ValueError("train_years and test_years must be positive")
+    if holdout_years < 0:
+        raise ValueError("holdout_years must be non-negative")
     start = pd.Timestamp(start)
-    end = pd.Timestamp(end)
+    walk_end = pd.Timestamp(end) - pd.DateOffset(years=holdout_years)
     windows: list[Window] = []
     train_start = start
     while True:
         train_end = train_start + pd.DateOffset(years=train_years)
         test_start = train_end + pd.Timedelta(days=purge_days)
-        if test_start >= end:
+        if test_start >= walk_end:
             break
-        test_end = min(test_start + pd.DateOffset(years=test_years), end)
+        test_end = min(test_start + pd.DateOffset(years=test_years), walk_end)
         windows.append(Window(train_start, train_end, test_start, test_end))
         train_start = train_start + pd.DateOffset(years=test_years)
     return windows

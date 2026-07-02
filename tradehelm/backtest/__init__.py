@@ -17,7 +17,7 @@ from .engine import (
     adjusted_ohlc,
 )
 from .tax import DanishTaxLedger, progressive_tax
-from .walkforward import Window, run_walk_forward, walk_forward_windows
+from .walkforward import Window, holdout_range, run_walk_forward, walk_forward_windows
 
 __all__ = [
     "BacktestEngine",
@@ -31,6 +31,7 @@ __all__ = [
     "Trade",
     "Window",
     "adjusted_ohlc",
+    "holdout_range",
     "metrics",
     "progressive_tax",
     "run_walk_forward",

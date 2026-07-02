@@ -168,9 +168,9 @@ class BacktestEngine:
 
         trades: list[Trade] = []
         stops: dict[str, float | None] = {}
-        equity: dict[pd.Timestamp, float] = {
-            sessions[0]: self._mark_dkk(portfolio, adjusted, sessions[0], fx)
-        }
+        # First point is the GROSS committed capital, so the funding FX fee (and any
+        # day-0 cost) shows as a return drag rather than being silently rebased away.
+        equity: dict[pd.Timestamp, float] = {sessions[0]: float(initial_dkk)}
         tax_by_year: dict[int, float] = {}
 
         for i in range(len(sessions) - 1):

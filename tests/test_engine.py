@@ -190,6 +190,37 @@ def test_year_end_tax_settled_before_new_year():
     assert res.tax_by_year[2020] > 0
 
 
+class NoTrade:
+    name = "no_trade"
+
+    def target_positions(self, ctx):
+        return []
+
+
+def test_funding_fx_fee_shows_as_return_drag():
+    from tradehelm.backtest import metrics
+
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    panel = {"AAA": _bars(sessions, [100.0] * n, [100.0] * n)}
+    costs = CostConfig(
+        commission_rate_us=0.0,
+        min_commission_us=0.0,
+        half_spread_bps=0.0,
+        slippage_bps=0.0,
+        fx_conversion_rate=0.0025,
+        custody_fee_annual=0.0,
+    )
+    engine = BacktestEngine(CAL, CostModel(costs), THRESHOLDS)
+    res = engine.run(
+        NoTrade(), panel, lambda _d: ["AAA"], "2021-01-04", "2021-01-08", 100_000.0, 7.0
+    )
+    # Equity starts at the gross 100,000 DKK; a no-trade run funded at 0.25% FX fee
+    # ends at 99,750 DKK -> total return -0.25% (the funding cost is not rebased away).
+    assert res.equity_dkk.iloc[0] == pytest.approx(100_000.0)
+    assert metrics.total_return(res.equity_dkk) == pytest.approx(-0.0025, abs=1e-9)
+
+
 class PeekAhead:
     name = "peek"
 

@@ -7,6 +7,7 @@ from tradehelm.backtest import (
     CostModel,
     TargetPosition,
     Window,
+    holdout_range,
     run_walk_forward,
     walk_forward_windows,
 )
@@ -16,7 +17,7 @@ from tradehelm.data import TradingCalendar
 
 def test_windows_roll_with_purge_and_no_straddle():
     windows = walk_forward_windows(
-        "2010-01-01", "2015-01-01", train_years=3, test_years=1, purge_days=5
+        "2010-01-01", "2015-01-01", train_years=3, test_years=1, purge_days=5, holdout_years=0
     )
     assert windows[0].train_start == pd.Timestamp("2010-01-01")
     assert windows[0].train_end == pd.Timestamp("2013-01-01")
@@ -26,6 +27,18 @@ def test_windows_roll_with_purge_and_no_straddle():
         assert w.test_start > w.train_end
     # rolls forward by test_years
     assert windows[1].train_start == pd.Timestamp("2011-01-01")
+
+
+def test_holdout_is_reserved_by_default():
+    # With the default 2-year holdout, no test window may enter the last two years.
+    windows = walk_forward_windows("2010-01-01", "2020-01-01", train_years=3, test_years=1)
+    walk_end = pd.Timestamp("2018-01-01")  # 2020 - 2y
+    assert windows
+    for w in windows:
+        assert w.test_end <= walk_end
+    hold_start, hold_end = holdout_range("2020-01-01")
+    assert hold_start == walk_end
+    assert hold_end == pd.Timestamp("2020-01-01")
 
 
 def test_invalid_years_rejected():
