@@ -87,6 +87,11 @@ class DanishTaxLedger:
         if year in self._closed:
             return self._closed[year]
 
+        # Every settled year must have a configured threshold - fail loud regardless
+        # of whether this particular year is taxable, a loss, or fully sheltered, so
+        # coverage never depends on realized P&L. Looked up before any mutation.
+        threshold = self.threshold(year)
+
         net = self._realized.get(year, 0.0)
         if net < 0:
             self.carried_loss += -net
@@ -95,11 +100,7 @@ class DanishTaxLedger:
             self.carried_loss -= net  # this year's gain partly consumed the carry
             tax = 0.0
         else:
-            # Compute (may raise on an unconfigured year) BEFORE mutating carry, so a
-            # failure leaves the ledger unchanged.
-            tax = progressive_tax(
-                net - self.carried_loss, self.threshold(year), self.rate_low, self.rate_high
-            )
+            tax = progressive_tax(net - self.carried_loss, threshold, self.rate_low, self.rate_high)
             self.carried_loss = 0.0
 
         self._closed[year] = tax

@@ -111,8 +111,12 @@ def test_close_year_is_idempotent():
     assert ledger.carried_loss == pytest.approx(0.0)  # not re-consumed
 
 
-def test_missing_threshold_year_raises():
-    ledger = _ledger()
-    ledger.add_dividend(100_000.0, 2099)
-    with pytest.raises(KeyError):
-        ledger.close_year(2099)
+def test_missing_threshold_year_raises_even_when_not_taxable():
+    # A configured threshold is required for EVERY settled year, not only taxable
+    # ones, so coverage never silently depends on realized P&L.
+    for realized in (100_000.0, -100_000.0, 0.0):
+        ledger = _ledger()
+        ledger.add_dividend(realized, 2099)
+        with pytest.raises(KeyError):
+            ledger.close_year(2099)
+        assert ledger.carried_loss == pytest.approx(0.0)  # no mutation on failure
