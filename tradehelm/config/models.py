@@ -73,12 +73,14 @@ class CostConfig(_Base):
       against a price list (MODELING_ASSUMPTIONS): half_spread_bps, slippage_bps.
     """
 
-    commission_rate_us: float
-    min_commission_us: float
-    half_spread_bps: float
-    slippage_bps: float
-    fx_conversion_rate: float
-    custody_fee_annual: float
+    # All non-negative; the fraction rates are additionally capped at 1.0 (100%)
+    # so a gross typo cannot silently pass this fail-loud guard.
+    commission_rate_us: float = Field(ge=0.0, le=1.0)
+    min_commission_us: float = Field(ge=0.0)
+    half_spread_bps: float = Field(ge=0.0)
+    slippage_bps: float = Field(ge=0.0)
+    fx_conversion_rate: float = Field(ge=0.0, le=1.0)
+    custody_fee_annual: float = Field(ge=0.0, le=1.0)
 
 
 class TaxConfig(_Base):
@@ -89,15 +91,17 @@ class TaxConfig(_Base):
     define at least one year.
     """
 
-    rate_low: float
-    rate_high: float
+    rate_low: float = Field(ge=0.0, le=1.0)
+    rate_high: float = Field(ge=0.0, le=1.0)
     thresholds: dict[int, float]
 
     @field_validator("thresholds")
     @classmethod
-    def _thresholds_non_empty(cls, value: dict[int, float]) -> dict[int, float]:
+    def _validate_thresholds(cls, value: dict[int, float]) -> dict[int, float]:
         if not value:
             raise ValueError("tax.thresholds must define at least one year")
+        if any(amount < 0 for amount in value.values()):
+            raise ValueError("tax.thresholds amounts must be non-negative")
         return value
 
 
@@ -107,13 +111,13 @@ class RiskConfig(_Base):
     All fields REQUIRED (limits must be set explicitly, not defaulted).
     """
 
-    max_positions: int
-    per_position_risk_frac: float
-    max_position_notional_frac: float
-    max_daily_loss_frac: float
-    max_drawdown_frac: float
-    price_collar_frac: float
-    min_ticket_dkk: float
+    max_positions: int = Field(ge=1)
+    per_position_risk_frac: float = Field(gt=0.0, le=1.0)
+    max_position_notional_frac: float = Field(gt=0.0, le=1.0)
+    max_daily_loss_frac: float = Field(gt=0.0, le=1.0)
+    max_drawdown_frac: float = Field(gt=0.0, le=1.0)
+    price_collar_frac: float = Field(gt=0.0, le=1.0)
+    min_ticket_dkk: float = Field(ge=0.0)
 
 
 class AppConfig(_Base):

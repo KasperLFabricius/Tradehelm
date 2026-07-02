@@ -26,6 +26,10 @@ class Secrets(BaseSettings):
         env_file=DEFAULT_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
+        # Treat an empty env var as unset at the SOURCE, so an empty process-level
+        # TRADEHELM_* does not shadow a real value in the repo .env. The validator
+        # below is defense-in-depth for whitespace-only values.
+        env_ignore_empty=True,
     )
 
     saxo_app_key: str | None = None

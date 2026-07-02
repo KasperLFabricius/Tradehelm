@@ -200,6 +200,15 @@ def test_secrets_default_to_none(monkeypatch):
     assert secrets.anthropic_api_key is None
 
 
+def test_empty_process_env_does_not_mask_dotenv(monkeypatch, tmp_path):
+    # An empty process-level var must not shadow a real value in the .env file.
+    envfile = tmp_path / ".env"
+    envfile.write_text("TRADEHELM_SAXO_APP_KEY=real-key\n", encoding="utf-8")
+    monkeypatch.setenv("TRADEHELM_SAXO_APP_KEY", "")
+    secrets = Secrets(_env_file=str(envfile))
+    assert secrets.saxo_app_key == "real-key"
+
+
 def test_secrets_blank_env_var_is_none(monkeypatch):
     # A .env copied from .env.example leaves optional secrets blank; an empty
     # (or whitespace-only) env var must normalise to None, not "".
@@ -223,6 +232,30 @@ def test_secrets_env_file_is_repo_root_anchored():
     assert env_file is not None
     assert Path(env_file).is_absolute()
     assert Path(env_file) == default_env_path()
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("costs", "slippage_bps", -2.5),
+        ("costs", "half_spread_bps", -1.0),
+        ("costs", "fx_conversion_rate", -0.0025),
+        ("costs", "commission_rate_us", 1.5),  # >100% rate
+        ("tax", "rate_high", -0.42),
+        ("risk", "max_daily_loss_frac", -0.02),
+        ("risk", "max_positions", 0),
+    ],
+)
+def test_out_of_range_money_values_rejected(section, field, value):
+    bad = {**_MIN_FINANCIAL, section: {**_MIN_FINANCIAL[section], field: value}}
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(bad)
+
+
+def test_negative_tax_threshold_rejected():
+    bad = {**_MIN_FINANCIAL, "tax": {**_MIN_FINANCIAL["tax"], "thresholds": {2026: -1}}}
+    with pytest.raises(ValidationError, match="non-negative"):
+        AppConfig.model_validate(bad)
 
 
 def test_todo_verify_keys_present():
