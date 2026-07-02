@@ -67,3 +67,20 @@ def test_persistent_empty_raises_dataerror():
 def test_invalid_retries_rejected():
     with pytest.raises(ValueError):
         YFinanceSource(retries=0)
+
+
+def test_translates_share_class_and_makes_end_exclusive():
+    seen = {}
+
+    def recording(symbol, start, end):
+        seen["symbol"] = symbol
+        seen["start"] = start
+        seen["end"] = end
+        return _yf_raw()
+
+    src = YFinanceSource(downloader=recording)
+    src.daily_bars("BRK.B", "2020-01-02", "2020-01-10")
+    # Yahoo share-class symbol, and the inclusive end is advanced by one day
+    # because yfinance treats `end` as exclusive.
+    assert seen["symbol"] == "BRK-B"
+    assert pd.Timestamp(seen["end"]) == pd.Timestamp("2020-01-11")

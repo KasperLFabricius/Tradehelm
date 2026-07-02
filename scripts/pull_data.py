@@ -17,7 +17,7 @@ import datetime as dt
 import sys
 
 from tradehelm.config import load
-from tradehelm.data import DataError, ParquetCache, Universe, YFinanceSource
+from tradehelm.data import DataError, ParquetCache, TradingCalendar, Universe, YFinanceSource
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -48,7 +48,7 @@ def _resolve_symbols(args: argparse.Namespace) -> list[str]:
 def main(argv=None) -> int:
     args = _parse_args(argv)
     cache_dir = args.cache or load().app.data.cache_dir
-    cache = ParquetCache(cache_dir)
+    cache = ParquetCache(cache_dir, calendar=TradingCalendar())
     source = YFinanceSource()
     symbols = _resolve_symbols(args)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .calendar import TradingCalendar
 from .schema import ensure_bar_frame
 from .sources import BarSource
 
@@ -22,8 +23,11 @@ def _safe_name(symbol: str) -> str:
 
 
 class ParquetCache:
-    def __init__(self, cache_dir: str | Path) -> None:
+    def __init__(self, cache_dir: str | Path, calendar: TradingCalendar | None = None) -> None:
         self.cache_dir = Path(cache_dir)
+        # When set, coverage requires every expected trading session to be present,
+        # not just matching endpoints - so an interior gap triggers a refetch.
+        self._calendar = calendar
 
     def path_for(self, symbol: str) -> Path:
         return self.cache_dir / f"{_safe_name(symbol)}.parquet"
@@ -54,6 +58,14 @@ class ParquetCache:
             combined = new
         return self.write(symbol, combined)
 
+    def _covers(self, df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+        if len(df) == 0 or df.index.min() > start_ts or df.index.max() < end_ts:
+            return False
+        if self._calendar is not None:
+            # No interior gaps either: every expected session must be present.
+            return len(self._calendar.missing_sessions(df.index, start_ts, end_ts)) == 0
+        return True
+
     def get_or_fetch(
         self,
         symbol: str,
@@ -63,16 +75,17 @@ class ParquetCache:
         *,
         refresh: bool = False,
     ) -> pd.DataFrame:
-        """Return bars for [start, end], fetching + caching only if not covered."""
+        """Return bars for [start, end], fetching + caching only if not covered.
+
+        Coverage means the cached frame spans [start, end]; if the cache was built
+        with a calendar, it must also contain every trading session in the range
+        (an interior gap forces one refetch). A single fetch is performed - we do
+        not loop if the source itself cannot fill the range.
+        """
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         cached = None if refresh else self.read(symbol)
-        if (
-            cached is not None
-            and len(cached)
-            and cached.index.min() <= start_ts
-            and cached.index.max() >= end_ts
-        ):
+        if cached is not None and self._covers(cached, start_ts, end_ts):
             return cached.loc[start_ts:end_ts]
         merged = self.update(symbol, source.daily_bars(symbol, start, end))
         return merged.loc[start_ts:end_ts]

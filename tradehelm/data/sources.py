@@ -33,6 +33,12 @@ def _flatten_yf(raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _yahoo_symbol(symbol: str) -> str:
+    """Canonical ticker -> Yahoo symbol. Yahoo uses '-' for share classes
+    (BRK.B -> BRK-B); the canonical ticker is preserved everywhere else."""
+    return symbol.replace(".", "-")
+
+
 class YFinanceSource:
     """Daily bars from yfinance, with retry/backoff and fail-loud empties."""
 
@@ -52,14 +58,18 @@ class YFinanceSource:
         self._sleep = sleep
 
     def _download(self, symbol: str, start, end) -> pd.DataFrame:
+        # Translate to Yahoo conventions: '-' share classes, and an EXCLUSIVE end
+        # (yfinance drops the end date) so our [start, end] contract is inclusive.
+        yahoo_symbol = _yahoo_symbol(symbol)
+        yahoo_end = pd.Timestamp(end).normalize() + pd.Timedelta(days=1)
         if self._downloader is not None:
-            return self._downloader(symbol, start, end)
+            return self._downloader(yahoo_symbol, start, yahoo_end)
         import yfinance as yf
 
         return yf.download(
-            symbol,
+            yahoo_symbol,
             start=start,
-            end=end,
+            end=yahoo_end,
             interval="1d",
             auto_adjust=False,
             actions=False,

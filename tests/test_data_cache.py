@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from tradehelm.data import BAR_COLUMNS, ParquetCache
+from tradehelm.data import BAR_COLUMNS, ParquetCache, TradingCalendar
 
 
 def _frame(dates):
@@ -72,3 +72,53 @@ def test_get_or_fetch_fetches_once_then_serves_from_cache(tmp_path):
 def test_path_for_is_filesystem_safe(tmp_path):
     cache = ParquetCache(tmp_path)
     assert cache.path_for("BRK.B").name == "BRK_B.parquet"
+
+
+def _bars_on(index):
+    n = len(index)
+    return pd.DataFrame(
+        {
+            "open": [1.0] * n,
+            "high": [1.0] * n,
+            "low": [1.0] * n,
+            "close": [1.0] * n,
+            "adj_close": [1.0] * n,
+            "volume": [1] * n,
+        },
+        index=index,
+    )
+
+
+def test_calendar_coverage_refetches_on_interior_gap(tmp_path):
+    cal = TradingCalendar()
+    sessions = cal.sessions("2021-01-04", "2021-01-15")  # 10 sessions
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.write("X", _bars_on(sessions.delete(3)))  # drop an interior session
+
+    calls = {"n": 0}
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            calls["n"] += 1
+            return _bars_on(sessions)  # complete range
+
+    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-15", Src())
+    assert calls["n"] == 1  # interior gap forced a refetch
+    assert len(out) == len(sessions)
+
+
+def test_endpoint_only_coverage_without_calendar(tmp_path):
+    cal = TradingCalendar()
+    sessions = cal.sessions("2021-01-04", "2021-01-15")
+    cache = ParquetCache(tmp_path)  # no calendar
+    cache.write("X", _bars_on(sessions.delete(3)))  # interior gap, endpoints intact
+
+    calls = {"n": 0}
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            calls["n"] += 1
+            return _bars_on(sessions)
+
+    cache.get_or_fetch("X", "2021-01-04", "2021-01-15", Src())
+    assert calls["n"] == 0  # endpoint-only check is satisfied (documented weaker guarantee)
