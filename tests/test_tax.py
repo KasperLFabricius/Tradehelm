@@ -83,6 +83,18 @@ def test_oversell_raises():
         ledger.sell("X", 101, 200.0, 2026)
 
 
+def test_non_positive_quantities_raise():
+    ledger = _ledger()
+    ledger.buy("X", 100, 100.0)
+    with pytest.raises(ValueError):
+        ledger.sell("X", -50, 200.0, 2026)  # sign bug must fail loud, not grow position
+    with pytest.raises(ValueError):
+        ledger.sell("X", 0, 200.0, 2026)
+    with pytest.raises(ValueError):
+        ledger.buy("X", -10, 100.0)
+    assert ledger.shares("X") == pytest.approx(100)  # unchanged
+
+
 def test_close_year_is_idempotent():
     ledger = _ledger()
     ledger.add_dividend(-30_000.0, 2025)

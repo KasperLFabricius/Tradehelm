@@ -43,11 +43,15 @@ class DanishTaxLedger:
         self.carried_loss = 0.0  # unused prior-year losses (non-negative)
 
     def buy(self, symbol: str, shares: float, price_dkk: float) -> None:
+        if shares <= 0:
+            raise ValueError(f"buy quantity must be positive, got {shares}")
         held, cost = self._basis.get(symbol, (0.0, 0.0))
         self._basis[symbol] = (held + shares, cost + shares * price_dkk)
 
     def sell(self, symbol: str, shares: float, price_dkk: float, year: int) -> float:
         """Realize a sale at the average cost; returns the DKK gain/loss."""
+        if shares <= 0:
+            raise ValueError(f"sell quantity must be positive, got {shares}")
         held, cost = self._basis.get(symbol, (0.0, 0.0))
         if shares > held + 1e-9:
             raise ValueError(f"cannot sell {shares} of {symbol!r}; only {held} held")
