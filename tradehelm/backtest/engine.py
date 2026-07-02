@@ -179,16 +179,18 @@ class BacktestEngine:
             ctx = StrategyContext(adjusted, decision_day, list(members_fn(decision_day)), portfolio)
             targets = {t.symbol: t for t in strategy.target_positions(ctx)}
 
+            # Settle the ending year BEFORE sizing/filling the new year's orders, so a
+            # prior-year tax liability is not left available as cash for them.
+            if fill_day.year != decision_day.year:
+                tax_by_year[decision_day.year] = self._settle_year(
+                    decision_day.year, portfolio, tax, fx, fill_day
+                )
+
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
             self._rebalance(portfolio, targets, adjusted, fill_day, equity_usd, fx, tax, trades)
 
             stops = {sym: t.stop_price for sym, t in targets.items() if t.stop_price is not None}
             self._apply_stops(portfolio, stops, adjusted, fill_day, fx, tax, trades)
-
-            if fill_day.year != decision_day.year:  # calendar year rolled over
-                tax_by_year[decision_day.year] = self._settle_year(
-                    decision_day.year, portfolio, tax, fx, fill_day
-                )
 
             equity[fill_day] = self._mark_dkk(portfolio, adjusted, fill_day, fx)
 
@@ -296,16 +298,34 @@ class BacktestEngine:
                 exec_price = self._costs.fill_price(open_price, side=-1)
                 self._sell(portfolio, symbol, -delta, exec_price, day, fx, tax, trades, "rebalance")
         for symbol, want in desired.items():
-            delta = want - portfolio.held(symbol)
             open_price = self._price(adjusted, symbol, day, "open")
-            if delta > 0 and open_price is not None:
+            if open_price is None:
+                continue
+            delta = want - portfolio.held(symbol)
+            if delta > 0:
+                # Cap by what the cash can actually afford at the fill price + commission
+                # (sizing used the raw open), so an all-in target can't overdraw / lever.
+                delta = min(delta, self._max_affordable(portfolio.cash_usd, open_price))
+            if delta > 0:
                 reason = targets[symbol].reason or "rebalance"
                 self._buy(portfolio, symbol, delta, open_price, day, fx, tax, trades, reason)
+
+    def _max_affordable(self, cash_usd: float, open_price: float) -> int:
+        """Largest whole-share buy whose fill price + commission fits in cash."""
+        fill = self._costs.fill_price(open_price, side=1)
+        if fill <= 0:
+            return 0
+        shares = int(cash_usd / fill)
+        while shares > 0 and shares * fill + self._costs.commission(shares * fill) > cash_usd:
+            shares -= 1
+        return shares
 
     def _settle_year(self, year, portfolio, tax, fx, day) -> float:
         tax_dkk = tax.close_year(year)  # raises on an unconfigured year (fail loud)
         if tax_dkk:
-            portfolio.cash_usd -= tax_dkk / fx(day)
+            # Paying tax converts USD->DKK, which also incurs the FX conversion fee.
+            total_dkk = tax_dkk + self._costs.fx_fee(tax_dkk)
+            portfolio.cash_usd -= total_dkk / fx(day)
         return tax_dkk
 
 
