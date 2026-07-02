@@ -7,6 +7,9 @@ secret validates its presence at that point.
 
 from __future__ import annotations
 
+from typing import Any
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,3 +25,17 @@ class Secrets(BaseSettings):
     saxo_app_secret: str | None = None
     anthropic_api_key: str | None = None
     api_token: str | None = None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: Any) -> Any:
+        """Treat a blank/whitespace env var as absent.
+
+        A user copying .env.example leaves optional Phase 5/6 secrets as e.g.
+        `TRADEHELM_API_TOKEN=`; pydantic-settings would otherwise read that as
+        "" rather than None, so an `is None` presence check would treat a
+        missing secret as configured. Normalise blanks to None.
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value

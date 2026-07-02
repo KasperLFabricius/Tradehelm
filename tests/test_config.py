@@ -90,6 +90,16 @@ def test_secrets_default_to_none(monkeypatch):
     assert secrets.anthropic_api_key is None
 
 
+def test_secrets_blank_env_var_is_none(monkeypatch):
+    # A .env copied from .env.example leaves optional secrets blank; an empty
+    # (or whitespace-only) env var must normalise to None, not "".
+    monkeypatch.setenv("TRADEHELM_API_TOKEN", "")
+    monkeypatch.setenv("TRADEHELM_ANTHROPIC_API_KEY", "   ")
+    secrets = Secrets(_env_file=None)
+    assert secrets.api_token is None
+    assert secrets.anthropic_api_key is None
+
+
 def test_todo_verify_keys_present():
     assert TODO_VERIFY_KEYS
     assert "tax.thresholds.2026" in TODO_VERIFY_KEYS
