@@ -11,8 +11,10 @@ from pydantic import ValidationError
 
 from tradehelm import config
 from tradehelm.config import (
+    MODELING_ASSUMPTIONS,
     TODO_VERIFY_KEYS,
     AppConfig,
+    CostConfig,
     Secrets,
     Settings,
     default_config_path,
@@ -226,3 +228,13 @@ def test_secrets_env_file_is_repo_root_anchored():
 def test_todo_verify_keys_present():
     assert TODO_VERIFY_KEYS
     assert "tax.thresholds.2026" in TODO_VERIFY_KEYS
+
+
+def test_every_cost_field_is_classified():
+    # Each cost field is either a price-list TODO-VERIFY item or a stress-tested
+    # modeling assumption - exactly one, never neither. Adding a new cost field
+    # without classifying it fails this test.
+    cost_fields = {f"costs.{name}" for name in CostConfig.model_fields}
+    todo_cost_keys = {k for k in TODO_VERIFY_KEYS if k.startswith("costs.")}
+    assert set(MODELING_ASSUMPTIONS).isdisjoint(todo_cost_keys)
+    assert todo_cost_keys | set(MODELING_ASSUMPTIONS) == cost_fields

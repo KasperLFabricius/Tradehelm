@@ -25,6 +25,16 @@ TODO_VERIFY_KEYS: tuple[str, ...] = (
     "tax.thresholds.2026",
 )
 
+# Cost inputs that are modeling ASSUMPTIONS (execution quality), not figures to
+# confirm against the Saxo price list. Per docs/COSTS_AND_TAX.md the research
+# protocol stress-tests these (costs x2) rather than "verifying" them, so they
+# are tracked separately and must never be mistaken for confirmed price-list
+# values or, conversely, dropped as if already confirmed.
+MODELING_ASSUMPTIONS: tuple[str, ...] = (
+    "costs.half_spread_bps",
+    "costs.slippage_bps",
+)
+
 
 class _Base(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -55,9 +65,12 @@ class StorageConfig(_Base):
 class CostConfig(_Base):
     """Saxo trading costs. See docs/COSTS_AND_TAX.md section 1.
 
-    All fields are REQUIRED (no defaults): these are money-consequential /
-    TODO-VERIFY values that must be set explicitly in config.yaml, never filled
-    from a placeholder (CLAUDE.md rule 5).
+    All fields are REQUIRED (no defaults) and money-consequential, so they must
+    be set explicitly in config.yaml (CLAUDE.md rule 5). Two categories:
+    - price-list / revisor values to confirm before Gate 7G (TODO_VERIFY_KEYS):
+      commission_rate_us, min_commission_us, fx_conversion_rate, custody_fee_annual;
+    - execution assumptions the research protocol stress-tests, not verified
+      against a price list (MODELING_ASSUMPTIONS): half_spread_bps, slippage_bps.
     """
 
     commission_rate_us: float

@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from .models import (
+    MODELING_ASSUMPTIONS,
     TODO_VERIFY_KEYS,
     AppConfig,
     BrokerConfig,
@@ -32,6 +33,7 @@ from .models import (
 from .secrets import DEFAULT_ENV_FILE, Secrets
 
 __all__ = [
+    "MODELING_ASSUMPTIONS",
     "TODO_VERIFY_KEYS",
     "AppConfig",
     "BrokerConfig",
