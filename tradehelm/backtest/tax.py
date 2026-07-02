@@ -48,10 +48,15 @@ class DanishTaxLedger:
         held, cost = self._basis.get(symbol, (0.0, 0.0))
         self._basis[symbol] = (held + shares, cost + shares * price_dkk)
 
+    def _ensure_open(self, year: int) -> None:
+        if year in self._closed:
+            raise ValueError(f"cannot record into already-settled year {year}")
+
     def sell(self, symbol: str, shares: float, price_dkk: float, year: int) -> float:
         """Realize a sale at the average cost; returns the DKK gain/loss."""
         if shares <= 0:
             raise ValueError(f"sell quantity must be positive, got {shares}")
+        self._ensure_open(year)
         held, cost = self._basis.get(symbol, (0.0, 0.0))
         if shares > held + 1e-9:
             raise ValueError(f"cannot sell {shares} of {symbol!r}; only {held} held")
@@ -63,6 +68,7 @@ class DanishTaxLedger:
 
     def add_dividend(self, amount_dkk: float, year: int) -> None:
         """Record dividend income (or, with a negative amount, other realized P&L)."""
+        self._ensure_open(year)
         self._realized[year] += amount_dkk
 
     def average_cost(self, symbol: str) -> float:

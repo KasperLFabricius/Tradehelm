@@ -111,6 +111,18 @@ def test_close_year_is_idempotent():
     assert ledger.carried_loss == pytest.approx(0.0)  # not re-consumed
 
 
+def test_cannot_record_into_a_settled_year():
+    ledger = _ledger()
+    ledger.add_dividend(10_000.0, 2026)
+    ledger.close_year(2026)
+    # A late correction for a closed year must fail loud, not be silently dropped.
+    with pytest.raises(ValueError):
+        ledger.add_dividend(5_000.0, 2026)
+    ledger.buy("X", 100, 100.0)
+    with pytest.raises(ValueError):
+        ledger.sell("X", 50, 200.0, 2026)
+
+
 def test_missing_threshold_year_raises_even_when_not_taxable():
     # A configured threshold is required for EVERY settled year, not only taxable
     # ones, so coverage never silently depends on realized P&L.
