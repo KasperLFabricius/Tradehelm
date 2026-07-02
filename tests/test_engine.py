@@ -337,3 +337,55 @@ def test_tax_settlement_raises_cash_instead_of_levering():
     assert res.tax_by_year[2020] == pytest.approx(progressive_tax(99_400.0, 55_300.0, 0.27, 0.42))
     assert any(t.reason == "tax-raise" for t in res.trades)
     assert res.equity_dkk.min() > 0  # equity never goes negative (no leverage)
+
+
+def test_final_year_tax_accrues_when_fully_invested():
+    # Realize a gain and stay fully invested through end (single year). The final-year
+    # tax must ACCRUE against equity - not try to sell into the now-closed year (which
+    # would crash) - and equity stays positive.
+    sessions = CAL.sessions("2021-01-04", "2021-01-15")
+    n = len(sessions)
+    opens = [100.0, 100.0, 200.0] + [200.0] * (n - 3)
+    panel = {"AAA": _bars(sessions, opens, list(opens))}
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        ChurnThenHold("AAA"),
+        panel,
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-15",
+        100_000.0,
+        7.0,
+    )
+    assert res.tax_by_year[2021] == pytest.approx(29_838.0)
+    assert res.final_equity_dkk == pytest.approx(169_562.0, rel=1e-6)
+    assert not any(t.reason == "tax-raise" for t in res.trades)  # accrued, not sold
+
+
+def test_tax_raise_covers_with_commission():
+    thresholds = {2020: 55_300.0, 2021: 79_400.0}
+    sessions = CAL.sessions("2020-12-24", "2021-01-06")
+    n = len(sessions)
+    opens = [100.0, 100.0, 200.0] + [200.0] * (n - 3)
+    panel = {"AAA": _bars(sessions, opens, list(opens))}
+    costs = CostConfig(
+        commission_rate_us=0.0008,
+        min_commission_us=1.0,
+        half_spread_bps=2.5,
+        slippage_bps=2.5,
+        fx_conversion_rate=0.0025,
+        custody_fee_annual=0.0,
+    )
+    engine = BacktestEngine(CAL, CostModel(costs), thresholds)
+    res = engine.run(
+        ChurnThenHold("AAA"),
+        panel,
+        lambda _d: ["AAA"],
+        "2020-12-24",
+        "2021-01-06",
+        100_000.0,
+        7.0,
+    )
+    # The raise covers the bill despite commissions, so equity never goes negative.
+    assert any(t.reason == "tax-raise" for t in res.trades)
+    assert res.equity_dkk.min() > 0

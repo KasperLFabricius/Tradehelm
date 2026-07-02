@@ -186,9 +186,9 @@ class BacktestEngine:
                     decision_day.year, portfolio, tax, fx, fill_day, adjusted, trades
                 )
 
-            # Resting GTC stops (set on prior decisions) fire at the open BEFORE any
-            # new sizing, matching live behaviour on a gap-through-stop day.
-            self._apply_stops(portfolio, resting_stops, adjusted, fill_day, fx, tax, trades)
+            # Resting GTC stops that GAP through the open fire at the open, before any
+            # new sizing (live behaviour on a gap-down day).
+            self._apply_gap_stops(portfolio, resting_stops, adjusted, fill_day, fx, tax, trades)
 
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
             self._rebalance(portfolio, targets, adjusted, fill_day, equity_usd, fx, tax, trades)
@@ -197,6 +197,11 @@ class BacktestEngine:
             resting_stops = {
                 sym: t.stop_price for sym, t in targets.items() if t.stop_price is not None
             }
+            # Intraday touches (open above the stop, low below) fire AFTER the
+            # market-on-open orders execute.
+            self._apply_intraday_stops(
+                portfolio, resting_stops, adjusted, fill_day, fx, tax, trades
+            )
 
             equity[fill_day] = self._mark_dkk(portfolio, adjusted, fill_day, fx)
 
@@ -254,7 +259,21 @@ class BacktestEngine:
         tax.sell(symbol, shares, proceeds_per_share_dkk, day.year)
         trades.append(Trade(day, symbol, -1, shares, exec_price, commission, reason))
 
-    def _apply_stops(self, portfolio, stops, adjusted, day, fx, tax, trades) -> None:
+    def _apply_gap_stops(self, portfolio, stops, adjusted, day, fx, tax, trades) -> None:
+        """Positions that gap through their stop at the open fill at the open."""
+        for symbol in list(portfolio.shares):
+            stop = stops.get(symbol)
+            if stop is None:
+                continue
+            day_open = self._price(adjusted, symbol, day, "open")
+            if day_open is not None and day_open <= stop:
+                exec_price = self._costs.fill_price(day_open, side=-1)
+                shares = portfolio.held(symbol)
+                self._sell(portfolio, symbol, shares, exec_price, day, fx, tax, trades, "stop-gap")
+
+    def _apply_intraday_stops(self, portfolio, stops, adjusted, day, fx, tax, trades) -> None:
+        """Positions that open above the stop but touch it intraday fill at the stop
+        (after the same-session market-on-open orders)."""
         for symbol in list(portfolio.shares):
             stop = stops.get(symbol)
             if stop is None:
@@ -263,32 +282,10 @@ class BacktestEngine:
             day_low = self._price(adjusted, symbol, day, "low")
             if day_open is None or day_low is None:
                 continue
-            if day_open <= stop:  # gapped through the stop -> fill at the open
-                exec_price = self._costs.fill_price(day_open, side=-1)
-                self._sell(
-                    portfolio,
-                    symbol,
-                    portfolio.held(symbol),
-                    exec_price,
-                    day,
-                    fx,
-                    tax,
-                    trades,
-                    "stop-gap",
-                )
-            elif day_low <= stop:  # touched intraday -> fill at the stop
+            if day_open > stop and day_low <= stop:
                 exec_price = self._costs.fill_price(stop, side=-1)
-                self._sell(
-                    portfolio,
-                    symbol,
-                    portfolio.held(symbol),
-                    exec_price,
-                    day,
-                    fx,
-                    tax,
-                    trades,
-                    "stop",
-                )
+                shares = portfolio.held(symbol)
+                self._sell(portfolio, symbol, shares, exec_price, day, fx, tax, trades, "stop")
 
     def _rebalance(self, portfolio, targets, adjusted, day, equity_usd, fx, tax, trades) -> None:
         current = dict(portfolio.shares)
@@ -330,19 +327,22 @@ class BacktestEngine:
 
     def _raise_cash(self, portfolio, needed_usd, adjusted, day, fx, tax, trades) -> None:
         """Liquidate positions (at the day's open) until cash covers needed_usd, so
-        paying tax can't push the book into leverage."""
+        paying tax can't push the book into leverage. Accounts for sell commission by
+        re-checking after each sale and selling more if still short."""
         for symbol in list(portfolio.shares):
-            if portfolio.cash_usd >= needed_usd:
-                return
             open_price = self._price(adjusted, symbol, day, "open")
             if open_price is None or open_price <= 0:
                 continue
             exec_price = self._costs.fill_price(open_price, side=-1)
-            shortfall = needed_usd - portfolio.cash_usd
-            # +1 share of slack for commission; capped at the holding.
-            shares = min(portfolio.held(symbol), int(shortfall / exec_price) + 1)
-            if shares > 0:
+            while portfolio.cash_usd < needed_usd and portfolio.held(symbol) > 0:
+                shortfall = needed_usd - portfolio.cash_usd
+                shares = min(portfolio.held(symbol), max(1, int(shortfall / exec_price) + 1))
+                before = portfolio.cash_usd
                 self._sell(portfolio, symbol, shares, exec_price, day, fx, tax, trades, "tax-raise")
+                if portfolio.cash_usd <= before:  # a sale that nets nothing (all commission)
+                    break
+            if portfolio.cash_usd >= needed_usd:
+                return
 
     def _settle_year(self, year, portfolio, tax, fx, day, adjusted, trades) -> float:
         tax_dkk = tax.close_year(year)  # raises on an unconfigured year (fail loud)
@@ -350,7 +350,10 @@ class BacktestEngine:
             return 0.0
         # Paying tax converts USD->DKK, which also incurs the FX conversion fee.
         needed_usd = (tax_dkk + self._costs.fx_fee(tax_dkk)) / fx(day)
-        if portfolio.cash_usd < needed_usd:
+        # Raise cash only when the sale lands in a still-open year (a mid-backtest
+        # rollover: day.year > the settled year). At final settlement day.year == year,
+        # which is now closed, so accrue the tax against equity instead of selling.
+        if portfolio.cash_usd < needed_usd and day.year != year:
             self._raise_cash(portfolio, needed_usd, adjusted, day, fx, tax, trades)
         portfolio.cash_usd -= needed_usd
         return tax_dkk
