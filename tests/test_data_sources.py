@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from tradehelm.data import BAR_COLUMNS, DataError, YFinanceSource
+from tradehelm.data import BAR_COLUMNS, DataError, EmptyDataError, YFinanceSource
 
 
 def _yf_raw(n=3):
@@ -53,15 +53,27 @@ def test_retries_then_succeeds():
     assert len(out) == 3
 
 
-def test_persistent_empty_raises_dataerror():
+def test_persistent_empty_raises_empty_data_error():
+    # Must stay EmptyDataError (not a generic DataError) so the cache can tell
+    # "no data" from "fetch failed" and tolerate a delisted tail.
     src = YFinanceSource(
         downloader=lambda s, a, b: pd.DataFrame(),
         retries=2,
         backoff=0.0,
         sleep=lambda _: None,
     )
-    with pytest.raises(DataError):
+    with pytest.raises(EmptyDataError):
         src.daily_bars("X", "2020-01-01", "2020-01-10")
+
+
+def test_network_error_raises_dataerror_not_empty():
+    def boom(symbol, start, end):
+        raise RuntimeError("connection reset")
+
+    src = YFinanceSource(downloader=boom, retries=2, backoff=0.0, sleep=lambda _: None)
+    with pytest.raises(DataError) as exc_info:
+        src.daily_bars("X", "2020-01-01", "2020-01-10")
+    assert not isinstance(exc_info.value, EmptyDataError)
 
 
 def test_invalid_retries_rejected():

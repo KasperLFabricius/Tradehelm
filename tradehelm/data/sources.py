@@ -89,6 +89,11 @@ class YFinanceSource:
                 last_exc = exc
             if attempt < self._retries - 1:
                 self._sleep(self._backoff * (2**attempt))
+        # Preserve EmptyDataError (a genuinely empty response) so callers can tell
+        # "no data" from "fetch failed" - the cache tolerates the former when
+        # extending an already-cached (e.g. delisted) symbol.
+        if isinstance(last_exc, EmptyDataError):
+            raise last_exc
         raise DataError(
             f"Failed to fetch bars for {symbol!r} after {self._retries} attempts"
-        ) from (last_exc)
+        ) from last_exc

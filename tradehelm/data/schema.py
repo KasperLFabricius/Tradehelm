@@ -11,7 +11,6 @@ from __future__ import annotations
 import pandas as pd
 
 BAR_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close", "adj_close", "volume")
-_PRICE_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
 
 
 class DataError(Exception):
@@ -67,7 +66,10 @@ def ensure_bar_frame(df: pd.DataFrame | None, *, symbol: str | None = None) -> p
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
     out = out[~out.index.duplicated(keep="last")].sort_index()
-    out = out.dropna(subset=list(_PRICE_COLUMNS), how="all")
+    # A valid bar needs every required field. Drop rows with ANY missing field
+    # (e.g. a NaN close or adj_close) so backtests never compute on NaNs; if that
+    # leaves an interior hole, the cache's gap check catches it downstream.
+    out = out.dropna(subset=list(BAR_COLUMNS), how="any")
     if len(out) == 0:
         raise EmptyDataError(f"All bars empty{who}")
     return out
