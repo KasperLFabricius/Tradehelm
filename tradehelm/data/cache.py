@@ -130,28 +130,31 @@ class ParquetCache:
         frames = [] if cached is None else [cached]
         for fetch_start, fetch_end in self._plan_fetch(cached, start_ts, end_ts):
             try:
-                fetched = ensure_bar_frame(
-                    source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol
+                frames.append(
+                    ensure_bar_frame(
+                        source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol
+                    )
                 )
             except EmptyDataError:
-                # No new data for this window. For a first fetch that's a genuine
-                # failure; for an extension of an already-cached symbol it just
-                # means the (e.g. delisted) tail has no more bars - keep what we have.
+                # Tolerated only for an already-cached symbol (a delisted dead tail);
+                # a first fetch with no data is a genuine failure. The requested-range
+                # gap check below still fails loud if this leaves an interior hole.
                 if cached is None:
                     raise
-                continue
-            # Validate the freshly fetched CONTIGUOUS frame for interior gaps (a
-            # partial response), before it touches disk. Gaps BETWEEN separate
-            # fetches (e.g. Jan and Mar requested but not Feb) are not corruption.
-            gaps = self._interior_gaps(fetched)
-            if len(gaps):
-                raise DataGapError(
-                    f"{symbol}: {len(gaps)} interior session gap(s) in fetched data "
-                    f"(e.g. {gaps[0].date()}); refusing to cache holey data"
-                )
-            frames.append(fetched)
 
         combined = pd.concat(frames)
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+        # Validate the REQUESTED slice for interior gaps BEFORE writing. This catches
+        # a partial or empty refill of an interior hole (bars on both sides), while
+        # allowing head/tail truncation (IPO / delisting / today's unpublished bar)
+        # and gaps between separately requested ranges.
+        requested = combined.loc[start_ts:end_ts]
+        gaps = self._interior_gaps(requested)
+        if len(gaps):
+            raise DataGapError(
+                f"{symbol}: {len(gaps)} interior session gap(s) in "
+                f"[{start_ts.date()}, {end_ts.date()}] (e.g. {gaps[0].date()}); "
+                "refusing to cache holey data"
+            )
         merged = self.write(symbol, combined)
         return merged.loc[start_ts:end_ts]

@@ -174,6 +174,37 @@ def test_disjoint_fetches_do_not_falsely_cover_the_gap(tmp_path):
     assert len(jan) and len(mar)  # sanity
 
 
+def test_partial_interior_refill_still_raises(tmp_path):
+    # Cache has bars on both sides of a hole; a refill that returns only part of
+    # the missing interior window must fail loud (the hole persists).
+    cal = TradingCalendar()
+    days = cal.sessions("2021-01-04", "2021-01-08")  # 5 sessions
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.write("X", _bars_on(days[[0, 4]]))  # only first + last; 3 interior missing
+
+    class PartialSrc:
+        def daily_bars(self, symbol, start, end):
+            return _bars_on(days[[1]])  # returns only one of the three missing days
+
+    with pytest.raises(DataGapError):
+        cache.get_or_fetch("X", "2021-01-04", "2021-01-08", PartialSrc())
+
+
+def test_empty_interior_refill_raises(tmp_path):
+    # An empty refill of an INTERIOR hole must fail loud (unlike a delisted tail).
+    cal = TradingCalendar()
+    days = cal.sessions("2021-01-04", "2021-01-08")
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.write("X", _bars_on(days[[0, 4]]))
+
+    class EmptySrc:
+        def daily_bars(self, symbol, start, end):
+            raise EmptyDataError("no data")
+
+    with pytest.raises(DataGapError):
+        cache.get_or_fetch("X", "2021-01-04", "2021-01-08", EmptySrc())
+
+
 def test_extension_tolerates_empty_tail_for_cached_symbol(tmp_path):
     cal = TradingCalendar()
     full = cal.sessions("2021-01-04", "2021-01-29")
