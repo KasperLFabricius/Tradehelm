@@ -1,0 +1,9 @@
+# Normalize line endings to LF in the repo for all text files. Keeps CI (Linux)
+# and Windows dev machines consistent and silences the CRLF-conversion warnings.
+* text=auto eol=lf
+
+# Binary files that must never be normalized.
+*.png binary
+*.jpg binary
+*.parquet binary
+*.db binary
