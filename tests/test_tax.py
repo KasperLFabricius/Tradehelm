@@ -111,6 +111,28 @@ def test_close_year_is_idempotent():
     assert ledger.carried_loss == pytest.approx(0.0)  # not re-consumed
 
 
+def test_dividend_withholding_credit():
+    ledger = _ledger()
+    # Gross 100,000 dividend -> Danish tax 30,090; 15,000 US withholding credited.
+    ledger.add_dividend(100_000.0, 2026, withholding_dkk=15_000.0)
+    assert ledger.close_year(2026) == pytest.approx(30_090.0 - 15_000.0)
+
+
+def test_withholding_credit_capped_no_refund():
+    ledger = _ledger()
+    ledger.add_dividend(10_000.0, 2026, withholding_dkk=5_000.0)  # tax 2,700 < withholding
+    assert ledger.close_year(2026) == pytest.approx(0.0)  # capped, no refund of the excess
+
+
+def test_out_of_order_settlement_rejected():
+    ledger = _ledger()
+    ledger.add_dividend(-40_000.0, 2026)  # a future loss
+    ledger.close_year(2026)
+    ledger.add_dividend(100_000.0, 2025)  # earlier-year gain
+    with pytest.raises(ValueError):
+        ledger.close_year(2025)  # must not let the 2026 loss shelter 2025
+
+
 def test_cannot_record_into_a_settled_year():
     ledger = _ledger()
     ledger.add_dividend(10_000.0, 2026)

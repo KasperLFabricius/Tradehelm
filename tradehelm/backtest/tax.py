@@ -39,6 +39,7 @@ class DanishTaxLedger:
         self.rate_high = rate_high
         self._basis: dict[str, tuple[float, float]] = {}  # symbol -> (shares, total_cost_dkk)
         self._realized: dict[int, float] = defaultdict(float)  # year -> net realized DKK
+        self._withholding: dict[int, float] = defaultdict(float)  # year -> foreign tax credit DKK
         self._closed: dict[int, float] = {}  # settled year -> tax due (idempotency)
         self.carried_loss = 0.0  # unused prior-year losses (non-negative)
 
@@ -66,10 +67,19 @@ class DanishTaxLedger:
         self._realized[year] += gain
         return gain
 
-    def add_dividend(self, amount_dkk: float, year: int) -> None:
-        """Record dividend income (or, with a negative amount, other realized P&L)."""
+    def add_dividend(self, amount_dkk: float, year: int, withholding_dkk: float = 0.0) -> None:
+        """Record dividend income (GROSS) plus any creditable foreign withholding.
+
+        For US shares the 15% treaty withholding is creditable against the Danish
+        tax; pass it as withholding_dkk and it reduces the year's tax at settlement
+        (conservative v1: capped at that year's tax, no refund of the excess).
+        A negative amount_dkk books other realized P&L.
+        """
         self._ensure_open(year)
+        if withholding_dkk < 0:
+            raise ValueError(f"withholding must be non-negative, got {withholding_dkk}")
         self._realized[year] += amount_dkk
+        self._withholding[year] += withholding_dkk
 
     def average_cost(self, symbol: str) -> float:
         held, cost = self._basis.get(symbol, (0.0, 0.0))
@@ -93,6 +103,14 @@ class DanishTaxLedger:
         if year in self._closed:
             return self._closed[year]
 
+        # Carry-forward is chronological: settling an earlier year after a later one
+        # would let a future loss shelter a prior gain. Reject going backward.
+        if self._closed and year < max(self._closed):
+            raise ValueError(
+                f"year {year} cannot be settled after later year {max(self._closed)}; "
+                "carry-forward is chronological"
+            )
+
         # Every settled year must have a configured threshold - fail loud regardless
         # of whether this particular year is taxable, a loss, or fully sheltered, so
         # coverage never depends on realized P&L. Looked up before any mutation.
@@ -101,13 +119,19 @@ class DanishTaxLedger:
         net = self._realized.get(year, 0.0)
         if net < 0:
             self.carried_loss += -net
-            tax = 0.0
+            gross_tax = 0.0
         elif net - self.carried_loss <= 0:
             self.carried_loss -= net  # this year's gain partly consumed the carry
-            tax = 0.0
+            gross_tax = 0.0
         else:
-            tax = progressive_tax(net - self.carried_loss, threshold, self.rate_low, self.rate_high)
+            gross_tax = progressive_tax(
+                net - self.carried_loss, threshold, self.rate_low, self.rate_high
+            )
             self.carried_loss = 0.0
 
+        # Foreign dividend withholding is credited against the Danish tax; capped at
+        # the year's tax (conservative - no refund of excess). See COSTS_AND_TAX.md.
+        credit = min(self._withholding.get(year, 0.0), gross_tax)
+        tax = gross_tax - credit
         self._closed[year] = tax
         return tax
