@@ -22,6 +22,29 @@ from tradehelm.config import (
     load_app_config,
 )
 
+# A minimal but complete set of the required financial sections, for tests that
+# construct an AppConfig directly.
+_MIN_FINANCIAL = {
+    "costs": {
+        "commission_rate_us": 0.0008,
+        "min_commission_us": 1.0,
+        "half_spread_bps": 2.5,
+        "slippage_bps": 2.5,
+        "fx_conversion_rate": 0.0025,
+        "custody_fee_annual": 0.0,
+    },
+    "tax": {"rate_low": 0.27, "rate_high": 0.42, "thresholds": {2026: 79400}},
+    "risk": {
+        "max_positions": 3,
+        "per_position_risk_frac": 0.01,
+        "max_position_notional_frac": 0.40,
+        "max_daily_loss_frac": 0.02,
+        "max_drawdown_frac": 0.10,
+        "price_collar_frac": 0.05,
+        "min_ticket_dkk": 2000.0,
+    },
+}
+
 
 def test_sample_config_loads_expected_values():
     cfg = load_app_config(default_config_path())
@@ -52,12 +75,23 @@ def test_load_returns_settings_with_app_and_secrets():
     assert settings.app.broker.environment == "sim"
 
 
-def test_defaults_are_sane_without_a_file():
-    cfg = AppConfig()
+def test_app_config_requires_financial_sections():
+    # costs/tax/risk have no defaults: an all-default AppConfig is impossible.
+    with pytest.raises(ValidationError):
+        AppConfig()
+    # thresholds must define at least one year.
+    fin = {**_MIN_FINANCIAL, "tax": {"rate_low": 0.27, "rate_high": 0.42, "thresholds": {}}}
+    with pytest.raises(ValidationError, match="thresholds"):
+        AppConfig.model_validate(fin)
+
+
+def test_operational_sections_default_when_financial_present():
+    cfg = AppConfig.model_validate(_MIN_FINANCIAL)
     assert cfg.broker.environment == "sim"
     assert cfg.broker.is_live is False
+    assert cfg.data.cache_dir == ".cache/data"
+    assert cfg.storage.db_path == "tradehelm.db"
     assert cfg.risk.per_position_risk_frac == pytest.approx(0.01)
-    assert cfg.tax.thresholds == {}
 
 
 def test_unknown_key_is_rejected():
@@ -94,28 +128,59 @@ def test_non_mapping_config_file_raises(tmp_path):
 
 
 def test_empty_mapping_config_raises(tmp_path):
+    # {} is a valid mapping but omits the required financial sections.
     f = tmp_path / "braces.yaml"
     f.write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="required section"):
+    with pytest.raises(ValidationError, match="Field required"):
         load_app_config(f)
 
 
 def test_config_missing_financial_section_raises(tmp_path):
     f = tmp_path / "partial.yaml"
-    # Has costs + tax but omits risk (and broker/data/storage, which is allowed).
+    # Full costs + tax but omits risk (broker/data/storage may be omitted).
     f.write_text(
-        "costs: {commission_rate_us: 0.0008}\ntax: {rate_low: 0.27}\n",
+        "costs:\n"
+        "  commission_rate_us: 0.0008\n"
+        "  min_commission_us: 1.0\n"
+        "  half_spread_bps: 2.5\n"
+        "  slippage_bps: 2.5\n"
+        "  fx_conversion_rate: 0.0025\n"
+        "  custody_fee_annual: 0.0\n"
+        "tax: {rate_low: 0.27, rate_high: 0.42, thresholds: {2026: 79400}}\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="risk"):
+    with pytest.raises(ValidationError, match="risk"):
+        load_app_config(f)
+
+
+def test_config_partial_financial_section_raises(tmp_path):
+    # A non-empty but PARTIAL costs block must be rejected (missing fields
+    # would otherwise silently default). This is Codex round-5's case.
+    f = tmp_path / "partialcosts.yaml"
+    f.write_text(
+        "costs: {commission_rate_us: 0.0008}\n"
+        "tax: {rate_low: 0.27, rate_high: 0.42, thresholds: {2026: 79400}}\n"
+        "risk: {max_positions: 3, per_position_risk_frac: 0.01,"
+        " max_position_notional_frac: 0.4, max_daily_loss_frac: 0.02,"
+        " max_drawdown_frac: 0.1, price_collar_frac: 0.05, min_ticket_dkk: 2000}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match="min_commission_us"):
         load_app_config(f)
 
 
 def test_config_empty_financial_section_raises(tmp_path):
     f = tmp_path / "emptysec.yaml"
     # costs present but empty must be rejected too.
-    f.write_text("costs: {}\ntax: {rate_low: 0.27}\nrisk: {max_positions: 3}\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="costs"):
+    f.write_text(
+        "costs: {}\n"
+        "tax: {rate_low: 0.27, rate_high: 0.42, thresholds: {2026: 79400}}\n"
+        "risk: {max_positions: 3, per_position_risk_frac: 0.01,"
+        " max_position_notional_frac: 0.4, max_daily_loss_frac: 0.02,"
+        " max_drawdown_frac: 0.1, price_collar_frac: 0.05, min_ticket_dkk: 2000}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match="commission_rate_us"):
         load_app_config(f)
 
 

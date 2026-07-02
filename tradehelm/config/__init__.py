@@ -32,7 +32,6 @@ from .models import (
 from .secrets import DEFAULT_ENV_FILE, Secrets
 
 __all__ = [
-    "REQUIRED_SECTIONS",
     "TODO_VERIFY_KEYS",
     "AppConfig",
     "BrokerConfig",
@@ -52,11 +51,6 @@ __all__ = [
 
 DEFAULT_CONFIG_FILENAME = "config.yaml"
 CONFIG_ENV_VAR = "TRADEHELM_CONFIG"
-
-# Sections that must be present and non-empty in a loaded config file. They carry
-# the money-consequential / TODO-VERIFY values; silently defaulting them would
-# defeat the fail-loud guarantee (CLAUDE.md rule 5).
-REQUIRED_SECTIONS: tuple[str, ...] = ("costs", "tax", "risk")
 
 # Repo root = two levels up from this file (tradehelm/config/__init__.py).
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -96,12 +90,11 @@ def load_app_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
     Fail-loud contract (we never silently trade on unconfirmed defaults):
     - missing file            -> FileNotFoundError
     - blank / null / scalar   -> ValueError
-    - missing/empty costs, tax or risk section -> ValueError
-    - unknown or malformed key -> ValidationError
+    - missing/empty/partial costs, tax or risk section -> ValidationError
 
     broker/data/storage may be omitted: their defaults are operational and safe
-    (broker defaults to SIM), whereas costs/tax/risk carry the money-consequential,
-    TODO-VERIFY values that must be present explicitly.
+    (broker defaults to SIM). costs/tax/risk are required field-by-field by the
+    schema (see models.py), so a truncated section is rejected too.
     """
     resolved = _resolve_path(path)
     if not resolved.exists():
@@ -113,13 +106,6 @@ def load_app_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
     if not isinstance(raw, dict):
         raise ValueError(
             f"Config file must be a YAML mapping, got {type(raw).__name__}: {resolved}"
-        )
-    missing = [section for section in REQUIRED_SECTIONS if not raw.get(section)]
-    if missing:
-        raise ValueError(
-            f"Config file {resolved} is missing or has empty required section(s): "
-            f"{', '.join(missing)}. These carry cost/tax/risk values that must be set "
-            "explicitly, not filled from placeholder defaults."
         )
     return AppConfig.model_validate(raw)
 

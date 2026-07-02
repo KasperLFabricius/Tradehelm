@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Placeholder values that the owner must confirm before Gate 7G (CLAUDE.md rule 5).
 # Dotted paths into AppConfig; later phases / the UI surface these as "unverified".
@@ -53,46 +53,68 @@ class StorageConfig(_Base):
 
 
 class CostConfig(_Base):
-    """Saxo trading costs. See docs/COSTS_AND_TAX.md section 1. TODO-VERIFY values."""
+    """Saxo trading costs. See docs/COSTS_AND_TAX.md section 1.
 
-    commission_rate_us: float = 0.0008
-    min_commission_us: float = 1.00
-    half_spread_bps: float = 2.5
-    slippage_bps: float = 2.5
-    fx_conversion_rate: float = 0.0025
-    custody_fee_annual: float = 0.0
+    All fields are REQUIRED (no defaults): these are money-consequential /
+    TODO-VERIFY values that must be set explicitly in config.yaml, never filled
+    from a placeholder (CLAUDE.md rule 5).
+    """
+
+    commission_rate_us: float
+    min_commission_us: float
+    half_spread_bps: float
+    slippage_bps: float
+    fx_conversion_rate: float
+    custody_fee_annual: float
 
 
 class TaxConfig(_Base):
     """Danish aktieindkomst model. See docs/COSTS_AND_TAX.md section 2.
 
-    thresholds maps a calendar year to the DKK progression point at which the
-    marginal rate steps from rate_low to rate_high.
+    All fields REQUIRED. thresholds maps a calendar year to the DKK progression
+    point at which the marginal rate steps from rate_low to rate_high, and must
+    define at least one year.
     """
 
-    rate_low: float = 0.27
-    rate_high: float = 0.42
-    thresholds: dict[int, float] = Field(default_factory=dict)
+    rate_low: float
+    rate_high: float
+    thresholds: dict[int, float]
+
+    @field_validator("thresholds")
+    @classmethod
+    def _thresholds_non_empty(cls, value: dict[int, float]) -> dict[int, float]:
+        if not value:
+            raise ValueError("tax.thresholds must define at least one year")
+        return value
 
 
 class RiskConfig(_Base):
-    """Risk limits, identical in backtest and live. See ARCHITECTURE.md section 5."""
+    """Risk limits, identical in backtest and live. See ARCHITECTURE.md section 5.
 
-    max_positions: int = 3
-    per_position_risk_frac: float = 0.01
-    max_position_notional_frac: float = 0.40
-    max_daily_loss_frac: float = 0.02
-    max_drawdown_frac: float = 0.10
-    price_collar_frac: float = 0.05
-    min_ticket_dkk: float = 2000.0
+    All fields REQUIRED (limits must be set explicitly, not defaulted).
+    """
+
+    max_positions: int
+    per_position_risk_frac: float
+    max_position_notional_frac: float
+    max_daily_loss_frac: float
+    max_drawdown_frac: float
+    price_collar_frac: float
+    min_ticket_dkk: float
 
 
 class AppConfig(_Base):
-    """Root of the non-secret configuration tree."""
+    """Root of the non-secret configuration tree.
+
+    broker/data/storage may be omitted (their defaults are operational and safe;
+    broker defaults to SIM). costs/tax/risk are REQUIRED - omitting any of them,
+    or any field within them, fails validation, so a truncated config never runs
+    on placeholder cost/tax/risk values.
+    """
 
     broker: BrokerConfig = Field(default_factory=BrokerConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    costs: CostConfig = Field(default_factory=CostConfig)
-    tax: TaxConfig = Field(default_factory=TaxConfig)
-    risk: RiskConfig = Field(default_factory=RiskConfig)
+    costs: CostConfig
+    tax: TaxConfig
+    risk: RiskConfig
