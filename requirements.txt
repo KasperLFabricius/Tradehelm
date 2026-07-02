@@ -1,0 +1,5 @@
+# Runtime dependencies. Kept minimal on purpose: each phase adds only what it
+# needs (see docs/PLAN.md). Phase 0 needs configuration loading only.
+pydantic>=2.6,<3
+pydantic-settings>=2.2,<3
+PyYAML>=6.0,<7

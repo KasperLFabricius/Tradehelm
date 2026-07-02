@@ -1,0 +1,20 @@
+# Tool configuration only. Dependencies live in requirements*.txt (no poetry/uv),
+# per docs CLAUDE.md. The package is importable via pytest's pythonpath setting
+# below; a full [project] packaging table is deferred until it is needed.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tradehelm"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["."]

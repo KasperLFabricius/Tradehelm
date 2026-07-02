@@ -1,0 +1,41 @@
+# Tradehelm configuration (non-secret). Secrets live in .env (see .env.example).
+# Values marked TODO-VERIFY are placeholders; the owner confirms them against the
+# Saxo DK price list / a revisor before Gate 7G (see docs/PLAN.md and
+# docs/COSTS_AND_TAX.md). Extra/unknown keys are rejected on load (fail-loud).
+
+broker:
+  environment: sim        # sim | live
+  live: false             # HARD GATE: live trading needs this true AND a startup confirmation
+
+data:
+  cache_dir: .cache/data
+  base_currency: DKK      # account and reporting currency
+  trading_currency: USD   # instrument currency (D3: USD sub-account)
+
+storage:
+  db_path: tradehelm.db
+
+costs:                    # Saxo DK Classic, US stocks. TODO-VERIFY every value.
+  commission_rate_us: 0.0008     # 0.08% per side       (TODO-VERIFY)
+  min_commission_us: 1.00        # USD per side         (TODO-VERIFY)
+  half_spread_bps: 2.5           # liquid large caps; research stresses x2
+  slippage_bps: 2.5              # market-on-open; research stresses x2
+  fx_conversion_rate: 0.0025     # 0.25% on DKK<->USD funding only, NOT per trade (TODO-VERIFY)
+  custody_fee_annual: 0.0        # (TODO-VERIFY whether charged on this account type)
+
+tax:                      # Danish aktieindkomst, individual, listed shares (realisation).
+  rate_low: 0.27
+  rate_high: 0.42
+  thresholds:             # DKK progression point per year (Phase 2 fills back to 2005)
+    2024: 61000
+    2025: 67500
+    2026: 79400           # TODO-VERIFY: sources conflict (67500 vs ~79400 post-reform)
+
+risk:                     # identical in backtest and live (ARCHITECTURE section 5)
+  max_positions: 3
+  per_position_risk_frac: 0.01      # 1.0% of equity from entry to stop
+  max_position_notional_frac: 0.40  # 40% of equity in a single position
+  max_daily_loss_frac: 0.02         # 2.0% -> flatten + HALT (human resume)
+  max_drawdown_frac: 0.10           # 10% from equity peak -> HALT (human resume)
+  price_collar_frac: 0.05           # reject market order if >5% from decision-time close
+  min_ticket_dkk: 2000              # skip trades whose notional is below this

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local overrides (never commit)
+.env
+*.local.yaml
+config.local.yaml
+
+# Data cache and databases (regenerated; see docs/PLAN.md Phase 1)
+.cache/
+*.db
+*.db-wal
+*.db-shm
+
+# Research artifacts that are regenerated (trials.csv and REPORT.md ARE tracked)
+research/plots/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
