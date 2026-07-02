@@ -146,23 +146,32 @@ def test_get_or_fetch_raises_on_persistent_interior_gap(tmp_path):
     assert cache.read("X") is None
 
 
-def test_truncated_history_is_covered_after_first_fetch(tmp_path):
-    # A delisted symbol's short history should be cached and NOT re-fetched every
-    # run (its fetched window is recorded).
+def test_disjoint_fetches_do_not_falsely_cover_the_gap(tmp_path):
+    # Fetching two non-overlapping ranges must NOT make an unfetched middle range
+    # look covered (a stored min/max window would; session-based coverage does not).
     cal = TradingCalendar()
-    full = cal.sessions("2021-01-04", "2021-01-29")
-    available = full[:8]
-    calls = {"n": 0}
+    jan = cal.sessions("2021-01-04", "2021-01-15")
+    mar = cal.sessions("2021-03-01", "2021-03-12")
 
     class Src:
         def daily_bars(self, symbol, start, end):
-            calls["n"] += 1
-            return _bars_on(available)
+            return _bars_on(cal.sessions(start, end))
 
     cache = ParquetCache(tmp_path, calendar=cal)
-    cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
-    cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())  # second run
-    assert calls["n"] == 1  # covered via recorded window, not re-fetched
+    cache.get_or_fetch("X", "2021-01-04", "2021-01-15", Src())
+    cache.get_or_fetch("X", "2021-03-01", "2021-03-12", Src())
+
+    calls = {"n": 0}
+
+    class CountingSrc:
+        def daily_bars(self, symbol, start, end):
+            calls["n"] += 1
+            return _bars_on(cal.sessions(start, end))
+
+    out = cache.get_or_fetch("X", "2021-02-01", "2021-02-12", CountingSrc())  # the gap
+    assert calls["n"] == 1  # the unfetched middle range IS fetched, not served empty
+    assert len(out) == len(cal.sessions("2021-02-01", "2021-02-12"))
+    assert len(jan) and len(mar)  # sanity
 
 
 def test_extension_tolerates_empty_tail_for_cached_symbol(tmp_path):
