@@ -13,7 +13,8 @@ intervals.
   `sp500_source_LICENSE.txt` in this folder.
 - **Ultimate source:** compiled from Wikipedia's S&P 500 constituents and change
   history.
-- **Refresh:** `python scripts/fetch_universe.py` re-downloads the current file.
+- **Refresh:** `python -m scripts.fetch_universe` (from the repo root)
+  re-downloads the current file.
 
 ### Known limitations (read before trusting a backtest)
 
