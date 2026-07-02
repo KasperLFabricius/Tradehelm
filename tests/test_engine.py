@@ -274,3 +274,66 @@ def test_protective_stop_exits_on_intraday_touch():
     stop_trades = [t for t in res.trades if t.reason in ("stop", "stop-gap")]
     assert stop_trades  # the stop fired
     assert stop_trades[0].price_usd == pytest.approx(90.0)  # intraday touch fills at the stop
+
+
+def test_gap_through_stop_fires_before_rebalance():
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    opens = [100.0, 100.0, 85.0] + [100.0] * (n - 3)  # S2 opens at 85, gapping below the 90 stop
+    panel = {"AAA": _bars(sessions, opens, list(opens))}
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        HoldWithStop("AAA", 90.0),
+        panel,
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-08",
+        100_000.0,
+        7.0,
+    )
+    s2_trades = [t for t in res.trades if t.date == sessions[2]]
+    assert s2_trades
+    # The resting stop fires at the gap-open BEFORE any fresh sizing that day.
+    assert s2_trades[0].side == -1
+    assert s2_trades[0].reason == "stop-gap"
+    assert s2_trades[0].price_usd == pytest.approx(85.0)
+
+
+class ChurnThenHold:
+    """Buy, exit (realize a gain), re-buy fully, then hold - to leave a held position
+    with low cash going into year-end."""
+
+    name = "churn_then_hold"
+
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.step = 0
+
+    def target_positions(self, ctx):
+        self.step += 1
+        if self.step == 2:
+            return []  # exit to realize the gain
+        return [TargetPosition(self.symbol, 1.0)]
+
+
+def test_tax_settlement_raises_cash_instead_of_levering():
+    thresholds = {2020: 55_300.0, 2021: 79_400.0}
+    sessions = CAL.sessions("2020-12-24", "2021-01-06")
+    n = len(sessions)
+    # buy @100, sell @200 (realize a 2020 gain), re-buy @200 and hold into 2021.
+    opens = [100.0, 100.0, 200.0] + [200.0] * (n - 3)
+    panel = {"AAA": _bars(sessions, opens, list(opens))}
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), thresholds)
+    res = engine.run(
+        ChurnThenHold("AAA"),
+        panel,
+        lambda _d: ["AAA"],
+        "2020-12-24",
+        "2021-01-06",
+        100_000.0,
+        7.0,
+    )
+    # 2020 tax is due while fully invested with little cash -> shares are sold to cover it.
+    assert res.tax_by_year[2020] == pytest.approx(progressive_tax(99_400.0, 55_300.0, 0.27, 0.42))
+    assert any(t.reason == "tax-raise" for t in res.trades)
+    assert res.equity_dkk.min() > 0  # equity never goes negative (no leverage)

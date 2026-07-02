@@ -167,7 +167,7 @@ class BacktestEngine:
         portfolio = Portfolio(cash_usd=funded_dkk / fx(sessions[0]))
 
         trades: list[Trade] = []
-        stops: dict[str, float | None] = {}
+        resting_stops: dict[str, float] = {}
         # First point is the GROSS committed capital, so the funding FX fee (and any
         # day-0 cost) shows as a return drag rather than being silently rebased away.
         equity: dict[pd.Timestamp, float] = {sessions[0]: float(initial_dkk)}
@@ -183,20 +183,28 @@ class BacktestEngine:
             # prior-year tax liability is not left available as cash for them.
             if fill_day.year != decision_day.year:
                 tax_by_year[decision_day.year] = self._settle_year(
-                    decision_day.year, portfolio, tax, fx, fill_day
+                    decision_day.year, portfolio, tax, fx, fill_day, adjusted, trades
                 )
+
+            # Resting GTC stops (set on prior decisions) fire at the open BEFORE any
+            # new sizing, matching live behaviour on a gap-through-stop day.
+            self._apply_stops(portfolio, resting_stops, adjusted, fill_day, fx, tax, trades)
 
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
             self._rebalance(portfolio, targets, adjusted, fill_day, equity_usd, fx, tax, trades)
 
-            stops = {sym: t.stop_price for sym, t in targets.items() if t.stop_price is not None}
-            self._apply_stops(portfolio, stops, adjusted, fill_day, fx, tax, trades)
+            # Stops for the resulting positions rest for the next session.
+            resting_stops = {
+                sym: t.stop_price for sym, t in targets.items() if t.stop_price is not None
+            }
 
             equity[fill_day] = self._mark_dkk(portfolio, adjusted, fill_day, fx)
 
         # Settle the final (partial) year so the reported equity is after-tax.
         final_year = sessions[-1].year
-        tax_by_year[final_year] = self._settle_year(final_year, portfolio, tax, fx, sessions[-1])
+        tax_by_year[final_year] = self._settle_year(
+            final_year, portfolio, tax, fx, sessions[-1], adjusted, trades
+        )
         equity[sessions[-1]] = self._mark_dkk(portfolio, adjusted, sessions[-1], fx)
 
         return BacktestResult(
@@ -320,12 +328,31 @@ class BacktestEngine:
             shares -= 1
         return shares
 
-    def _settle_year(self, year, portfolio, tax, fx, day) -> float:
+    def _raise_cash(self, portfolio, needed_usd, adjusted, day, fx, tax, trades) -> None:
+        """Liquidate positions (at the day's open) until cash covers needed_usd, so
+        paying tax can't push the book into leverage."""
+        for symbol in list(portfolio.shares):
+            if portfolio.cash_usd >= needed_usd:
+                return
+            open_price = self._price(adjusted, symbol, day, "open")
+            if open_price is None or open_price <= 0:
+                continue
+            exec_price = self._costs.fill_price(open_price, side=-1)
+            shortfall = needed_usd - portfolio.cash_usd
+            # +1 share of slack for commission; capped at the holding.
+            shares = min(portfolio.held(symbol), int(shortfall / exec_price) + 1)
+            if shares > 0:
+                self._sell(portfolio, symbol, shares, exec_price, day, fx, tax, trades, "tax-raise")
+
+    def _settle_year(self, year, portfolio, tax, fx, day, adjusted, trades) -> float:
         tax_dkk = tax.close_year(year)  # raises on an unconfigured year (fail loud)
-        if tax_dkk:
-            # Paying tax converts USD->DKK, which also incurs the FX conversion fee.
-            total_dkk = tax_dkk + self._costs.fx_fee(tax_dkk)
-            portfolio.cash_usd -= total_dkk / fx(day)
+        if not tax_dkk:
+            return 0.0
+        # Paying tax converts USD->DKK, which also incurs the FX conversion fee.
+        needed_usd = (tax_dkk + self._costs.fx_fee(tax_dkk)) / fx(day)
+        if portfolio.cash_usd < needed_usd:
+            self._raise_cash(portfolio, needed_usd, adjusted, day, fx, tax, trades)
+        portfolio.cash_usd -= needed_usd
         return tax_dkk
 
 
