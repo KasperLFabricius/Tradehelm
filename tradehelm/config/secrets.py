@@ -7,16 +7,23 @@ secret validates its presence at that point.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Anchor the default .env to the repo root (two levels up from this file), the
+# same way config.yaml is resolved. A relative ".env" would be looked up in the
+# process CWD, so launching from e.g. a Task Scheduler entry with no "Start in"
+# directory would silently miss the repo .env and read every secret as None.
+DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Secrets(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TRADEHELM_",
-        env_file=".env",
+        env_file=DEFAULT_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )

@@ -29,7 +29,7 @@ from .models import (
     StorageConfig,
     TaxConfig,
 )
-from .secrets import Secrets
+from .secrets import DEFAULT_ENV_FILE, Secrets
 
 __all__ = [
     "TODO_VERIFY_KEYS",
@@ -43,6 +43,7 @@ __all__ = [
     "StorageConfig",
     "TaxConfig",
     "default_config_path",
+    "default_env_path",
     "dump_app_config",
     "load",
     "load_app_config",
@@ -67,6 +68,11 @@ class Settings:
 def default_config_path() -> Path:
     """Repo-root config.yaml (the checked-in sample / default configuration)."""
     return _REPO_ROOT / DEFAULT_CONFIG_FILENAME
+
+
+def default_env_path() -> Path:
+    """Repo-root .env (anchored via __file__, independent of the process CWD)."""
+    return DEFAULT_ENV_FILE
 
 
 def _resolve_path(path: str | os.PathLike[str] | None) -> Path:
@@ -100,9 +106,13 @@ def dump_app_config(cfg: AppConfig) -> str:
 def load(
     path: str | os.PathLike[str] | None = None,
     *,
-    env_file: str | os.PathLike[str] | None = ".env",
+    env_file: str | os.PathLike[str] | None = DEFAULT_ENV_FILE,
 ) -> Settings:
-    """Load app config from YAML and secrets from the environment / .env."""
+    """Load app config from YAML and secrets from the environment / .env.
+
+    env_file defaults to the repo-root .env (CWD-independent). Pass env_file=None
+    to read secrets from OS environment variables only (no dotenv file).
+    """
     resolved = _resolve_path(path)
     app = load_app_config(resolved)
     secrets = Secrets(_env_file=env_file)  # type: ignore[call-arg]

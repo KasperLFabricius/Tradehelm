@@ -3,6 +3,8 @@
 Acceptance for Phase 0: config.load() round-trips a sample config (docs/PLAN.md).
 """
 
+from pathlib import Path
+
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -14,6 +16,7 @@ from tradehelm.config import (
     Secrets,
     Settings,
     default_config_path,
+    default_env_path,
     dump_app_config,
     load,
     load_app_config,
@@ -98,6 +101,21 @@ def test_secrets_blank_env_var_is_none(monkeypatch):
     secrets = Secrets(_env_file=None)
     assert secrets.api_token is None
     assert secrets.anthropic_api_key is None
+
+
+def test_default_env_path_is_absolute_and_at_repo_root():
+    env_path = default_env_path()
+    assert env_path.is_absolute()
+    assert env_path.name == ".env"
+    # Same repo root as config.yaml, so both resolve independently of the CWD.
+    assert env_path.parent == default_config_path().parent
+
+
+def test_secrets_env_file_is_repo_root_anchored():
+    env_file = Secrets.model_config.get("env_file")
+    assert env_file is not None
+    assert Path(env_file).is_absolute()
+    assert Path(env_file) == default_env_path()
 
 
 def test_todo_verify_keys_present():
