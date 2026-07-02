@@ -188,14 +188,21 @@ class BacktestEngine:
 
             # Resting GTC stops that GAP through the open fire at the open, before any
             # new sizing (live behaviour on a gap-down day).
-            self._apply_gap_stops(portfolio, resting_stops, adjusted, fill_day, fx, tax, trades)
+            stopped = self._apply_gap_stops(
+                portfolio, resting_stops, adjusted, fill_day, fx, tax, trades
+            )
+            # A gap-stopped symbol is NOT re-entered on the same open; re-entry needs a
+            # fresh decision on a later session.
+            active = {sym: t for sym, t in targets.items() if sym not in stopped}
 
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
-            self._rebalance(portfolio, targets, adjusted, fill_day, equity_usd, fx, tax, trades)
+            self._rebalance(portfolio, active, adjusted, fill_day, equity_usd, fx, tax, trades)
 
-            # Stops for the resulting positions rest for the next session.
+            # Stops for the positions actually held now rest for the next session.
             resting_stops = {
-                sym: t.stop_price for sym, t in targets.items() if t.stop_price is not None
+                sym: targets[sym].stop_price
+                for sym in portfolio.shares
+                if sym in targets and targets[sym].stop_price is not None
             }
             # Intraday touches (open above the stop, low below) fire AFTER the
             # market-on-open orders execute.
@@ -259,8 +266,10 @@ class BacktestEngine:
         tax.sell(symbol, shares, proceeds_per_share_dkk, day.year)
         trades.append(Trade(day, symbol, -1, shares, exec_price, commission, reason))
 
-    def _apply_gap_stops(self, portfolio, stops, adjusted, day, fx, tax, trades) -> None:
-        """Positions that gap through their stop at the open fill at the open."""
+    def _apply_gap_stops(self, portfolio, stops, adjusted, day, fx, tax, trades) -> set[str]:
+        """Positions that gap through their stop at the open fill at the open. Returns
+        the symbols stopped out (so they aren't re-entered on the same open)."""
+        stopped: set[str] = set()
         for symbol in list(portfolio.shares):
             stop = stops.get(symbol)
             if stop is None:
@@ -270,6 +279,8 @@ class BacktestEngine:
                 exec_price = self._costs.fill_price(day_open, side=-1)
                 shares = portfolio.held(symbol)
                 self._sell(portfolio, symbol, shares, exec_price, day, fx, tax, trades, "stop-gap")
+                stopped.add(symbol)
+        return stopped
 
     def _apply_intraday_stops(self, portfolio, stops, adjusted, day, fx, tax, trades) -> None:
         """Positions that open above the stop but touch it intraday fill at the stop

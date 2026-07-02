@@ -32,19 +32,37 @@ def holdout_range(end, holdout_years: int = 2) -> tuple[pd.Timestamp, pd.Timesta
     return end - pd.DateOffset(years=holdout_years), end
 
 
+def _purged_start(train_end: pd.Timestamp, purge_sessions: int, calendar) -> pd.Timestamp:
+    """Test-window start, leaving purge_sessions TRADING sessions between it and
+    train_end (Lopez de Prado embargo).
+
+    Without a calendar, falls back to calendar days (approximate) - pass a calendar
+    for the exact trading-day purge the validation protocol requires.
+    """
+    if calendar is None:
+        return train_end + pd.Timedelta(days=purge_sessions)
+    window_end = train_end + pd.Timedelta(days=purge_sessions * 4 + 30)
+    after = calendar.sessions(train_end + pd.Timedelta(days=1), window_end)  # sessions > train_end
+    if len(after) <= purge_sessions:  # near the end of data
+        return window_end
+    return after[purge_sessions]  # purge_sessions sessions purged; test starts on the next
+
+
 def walk_forward_windows(
     start,
     end,
     train_years: int = 3,
     test_years: int = 1,
-    purge_days: int = 5,
+    purge_sessions: int = 5,
     holdout_years: int = 2,
+    calendar=None,
 ) -> list[Window]:
     """Rolling train/test windows over [start, end - holdout_years].
 
-    The final holdout_years are RESERVED (never appear in a test window) so the
-    Gate 3G holdout stays untouched even when callers pass the full data range as
-    end. Pass holdout_years=0 to use all data for walk-forward.
+    The purge between train and test is purge_sessions TRADING days (pass a calendar;
+    without one it approximates with calendar days). The final holdout_years are
+    RESERVED (never appear in a test window) so the Gate 3G holdout stays untouched
+    even when callers pass the full data range as end; holdout_years=0 uses all data.
     """
     if train_years <= 0 or test_years <= 0:
         raise ValueError("train_years and test_years must be positive")
@@ -56,7 +74,7 @@ def walk_forward_windows(
     train_start = start
     while True:
         train_end = train_start + pd.DateOffset(years=train_years)
-        test_start = train_end + pd.Timedelta(days=purge_days)
+        test_start = _purged_start(train_end, purge_sessions, calendar)
         if test_start >= walk_end:
             break
         test_end = min(test_start + pd.DateOffset(years=test_years), walk_end)

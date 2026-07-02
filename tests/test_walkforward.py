@@ -15,23 +15,32 @@ from tradehelm.config import CostConfig
 from tradehelm.data import TradingCalendar
 
 
-def test_windows_roll_with_purge_and_no_straddle():
+def test_windows_use_trading_day_purge():
+    cal = TradingCalendar()
     windows = walk_forward_windows(
-        "2010-01-01", "2015-01-01", train_years=3, test_years=1, purge_days=5, holdout_years=0
+        "2010-01-01",
+        "2015-01-01",
+        train_years=3,
+        test_years=1,
+        purge_sessions=5,
+        holdout_years=0,
+        calendar=cal,
     )
     assert windows[0].train_start == pd.Timestamp("2010-01-01")
     assert windows[0].train_end == pd.Timestamp("2013-01-01")
-    assert windows[0].test_start == pd.Timestamp("2013-01-06")  # 5-day purge after train
-    # each test window is out-of-sample (strictly after its train, past the purge)
-    for w in windows:
-        assert w.test_start > w.train_end
-    # rolls forward by test_years
+    # 5 trading sessions (2013-01-02,03,04,07,08) are purged; test starts on the next.
+    assert windows[0].test_start == pd.Timestamp("2013-01-09")
+    purged = cal.sessions(windows[0].train_end, windows[0].test_start)
+    purged = purged[(purged > windows[0].train_end) & (purged < windows[0].test_start)]
+    assert len(purged) == 5  # exactly 5 trading days of purge, regardless of weekends
     assert windows[1].train_start == pd.Timestamp("2011-01-01")
 
 
 def test_holdout_is_reserved_by_default():
-    # With the default 2-year holdout, no test window may enter the last two years.
-    windows = walk_forward_windows("2010-01-01", "2020-01-01", train_years=3, test_years=1)
+    cal = TradingCalendar()
+    windows = walk_forward_windows(
+        "2010-01-01", "2020-01-01", train_years=3, test_years=1, calendar=cal
+    )
     walk_end = pd.Timestamp("2018-01-01")  # 2020 - 2y
     assert windows
     for w in windows:
