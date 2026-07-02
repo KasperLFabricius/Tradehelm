@@ -20,8 +20,8 @@ Owner: Kasper Lindskov Fabricius. Planner/reviewer: Fable. Implementer: Opus.
 
 | Phase | Title | PR | Status |
 |---|---|---|---|
-| 0 | Scaffolding + CI | [#9](https://github.com/KasperLFabricius/Tradehelm/pull/9) | in review |
-| 1 | Data layer | — | not started |
+| 0 | Scaffolding + CI | [#9](https://github.com/KasperLFabricius/Tradehelm/pull/9) | Merged |
+| 1 | Data layer | [#10](https://github.com/KasperLFabricius/Tradehelm/pull/10) | in review |
 | 2 | Backtester + cost/tax models | — | not started |
 | 3 | Strategies + research study | — | not started |
 | 3G | **GATE: go/no-go on strategy results** | — | — |

@@ -1,5 +1,13 @@
 # Runtime dependencies. Kept minimal on purpose: each phase adds only what it
-# needs (see docs/PLAN.md). Phase 0 needs configuration loading only.
+# needs (see docs/PLAN.md).
+
+# Phase 0: configuration loading
 pydantic>=2.6,<3
 pydantic-settings>=2.2,<3
 PyYAML>=6.0,<7
+
+# Phase 1: data layer
+pandas>=2.2,<3
+yfinance>=0.2.40,<0.3
+pyarrow>=15,<21
+exchange_calendars>=4.5,<5
