@@ -86,17 +86,23 @@ class ParquetCache:
             return [(start_ts, end_ts)]  # safety; normally already "covered"
         return [(missing.min(), missing.max())]
 
-    def _interior_gaps(self, df: pd.DataFrame) -> pd.DatetimeIndex:
-        """Missing sessions strictly WITHIN the frame's own span.
+    def _requested_interior_gaps(
+        self, merged: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+    ) -> pd.DatetimeIndex:
+        """Sessions in [start, end] that are missing AND interior to the symbol's
+        OVERALL cached span (data on both sides).
 
-        This is the genuine-corruption signal (a partial response or manual edit
-        dropped a day). It deliberately ignores head/tail truncation relative to a
-        requested range, because a symbol legitimately has no bars before its IPO,
-        after a delisting, or for today's not-yet-published session.
+        Classifying against the whole merged span - not the sliced request - means
+        a hole at the edge of the requested window is still caught (e.g. Feb missing
+        between cached Jan and Mar when the request starts in Feb). Missing sessions
+        before the first or after the last cached bar are legitimate IPO / delisting
+        / not-yet-published truncation, not gaps.
         """
-        if self._calendar is None or len(df) == 0:
+        if self._calendar is None or len(merged) == 0:
             return pd.DatetimeIndex([])
-        return self._calendar.missing_sessions(df.index, df.index.min(), df.index.max())
+        missing = self._calendar.sessions(start_ts, end_ts).difference(merged.index)
+        lo, hi = merged.index.min(), merged.index.max()
+        return missing[(missing > lo) & (missing < hi)]
 
     def get_or_fetch(
         self,
@@ -144,12 +150,11 @@ class ParquetCache:
 
         combined = pd.concat(frames)
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
-        # Validate the REQUESTED slice for interior gaps BEFORE writing. This catches
-        # a partial or empty refill of an interior hole (bars on both sides), while
-        # allowing head/tail truncation (IPO / delisting / today's unpublished bar)
-        # and gaps between separately requested ranges.
-        requested = combined.loc[start_ts:end_ts]
-        gaps = self._interior_gaps(requested)
+        # Validate the requested range for interior gaps BEFORE writing. Catches a
+        # partial/empty refill of an interior hole (including one at the edge of the
+        # request), while allowing head/tail truncation and gaps between separately
+        # requested ranges.
+        gaps = self._requested_interior_gaps(combined, start_ts, end_ts)
         if len(gaps):
             raise DataGapError(
                 f"{symbol}: {len(gaps)} interior session gap(s) in "

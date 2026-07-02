@@ -205,6 +205,28 @@ def test_empty_interior_refill_raises(tmp_path):
         cache.get_or_fetch("X", "2021-01-04", "2021-01-08", EmptySrc())
 
 
+def test_request_starting_inside_a_hole_raises(tmp_path):
+    # Jan and Mar cached separately; a request for Feb->early-Mar whose Feb refill
+    # is empty must fail loud even though the slice's available rows (March) are
+    # contiguous. The Feb hole is interior to the Jan..Mar cached span.
+    cal = TradingCalendar()
+
+    class JanMarSrc:
+        def daily_bars(self, symbol, start, end):
+            return _bars_on(cal.sessions(start, end))
+
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.get_or_fetch("X", "2021-01-04", "2021-01-29", JanMarSrc())
+    cache.get_or_fetch("X", "2021-03-01", "2021-03-31", JanMarSrc())
+
+    class EmptyFebSrc:
+        def daily_bars(self, symbol, start, end):
+            raise EmptyDataError("no February data")
+
+    with pytest.raises(DataGapError):
+        cache.get_or_fetch("X", "2021-02-15", "2021-03-05", EmptyFebSrc())
+
+
 def test_extension_tolerates_empty_tail_for_cached_symbol(tmp_path):
     cal = TradingCalendar()
     full = cal.sessions("2021-01-04", "2021-01-29")

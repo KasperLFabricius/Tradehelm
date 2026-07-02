@@ -45,6 +45,16 @@ def test_missing_columns_raise():
         Universe(pd.DataFrame({"ticker": ["X"]}))
 
 
+def test_malformed_end_date_raises_but_blank_is_open():
+    # A non-blank, unparseable end_date must fail loud (not become an open interval).
+    bad = pd.DataFrame({"ticker": ["X"], "start_date": ["2010-01-01"], "end_date": ["not-a-date"]})
+    with pytest.raises(DataError):
+        Universe(bad)
+    # A blank end_date remains a legitimately open (still-active) interval.
+    ok = pd.DataFrame({"ticker": ["X"], "start_date": ["2010-01-01"], "end_date": [""]})
+    assert Universe(ok).members("2024-01-01") == ["X"]
+
+
 def test_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         Universe.from_csv(tmp_path / "nope.csv")

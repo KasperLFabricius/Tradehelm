@@ -26,9 +26,20 @@ class Universe:
         df = intervals.loc[:, ["ticker", "start_date", "end_date"]].copy()
         df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
         df["start_date"] = pd.to_datetime(df["start_date"]).dt.normalize()
-        df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce").dt.normalize()
         if df["start_date"].isna().any():
             raise DataError("Universe has rows with an unparseable start_date")
+
+        # A blank end_date is a legitimately open interval (still a member). But a
+        # NON-blank yet unparseable end_date (a typo in a removal date) must fail
+        # loud - coercing it to NaT would silently keep a removed ticker active
+        # forever, corrupting point-in-time membership.
+        raw_end = df["end_date"]
+        blank = raw_end.isna() | (raw_end.astype(str).str.strip() == "")
+        parsed_end = pd.to_datetime(raw_end, errors="coerce").dt.normalize()
+        malformed = parsed_end.isna() & ~blank
+        if malformed.any():
+            raise DataError(f"Universe has {int(malformed.sum())} unparseable end_date value(s)")
+        df["end_date"] = parsed_end
         self._intervals = df.reset_index(drop=True)
 
     @classmethod
