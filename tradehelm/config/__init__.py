@@ -94,7 +94,15 @@ def load_app_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
     if not resolved.exists():
         raise FileNotFoundError(f"Config file not found: {resolved}")
     with resolved.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+        raw = yaml.safe_load(fh)
+    # Fail loud on a blank / null / non-mapping file rather than silently loading
+    # all-default (unconfirmed) cost/tax/risk values.
+    if raw is None:
+        raise ValueError(f"Config file is empty: {resolved}")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"Config file must be a YAML mapping, got {type(raw).__name__}: {resolved}"
+        )
     return AppConfig.model_validate(raw)
 
 

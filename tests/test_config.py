@@ -79,6 +79,20 @@ def test_missing_config_file_raises(tmp_path):
         load_app_config(tmp_path / "does_not_exist.yaml")
 
 
+def test_empty_config_file_raises(tmp_path):
+    empty = tmp_path / "empty.yaml"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        load_app_config(empty)
+
+
+def test_non_mapping_config_file_raises(tmp_path):
+    scalar = tmp_path / "scalar.yaml"
+    scalar.write_text("just-a-string", encoding="utf-8")
+    with pytest.raises(ValueError, match="mapping"):
+        load_app_config(scalar)
+
+
 def test_secrets_read_from_environment(monkeypatch):
     monkeypatch.setenv("TRADEHELM_SAXO_APP_KEY", "sim-key-123")
     secrets = Secrets(_env_file=None)
