@@ -18,3 +18,7 @@ minversion = "8.0"
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["."]
+filterwarnings = [
+    # Narrow: numpy 2.x + pandas + exchange_calendars internal noise, not our code.
+    "ignore:The 'generic' unit for NumPy timedelta is deprecated:DeprecationWarning",
+]
