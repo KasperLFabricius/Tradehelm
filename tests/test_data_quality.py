@@ -59,14 +59,17 @@ def test_missing_sessions_detects_a_dropped_day():
     assert list(missing) == [sessions[2]]
 
 
-def test_build_report_renders_both_tables():
+def test_build_report_renders_tables_and_missing_symbols():
     coverage = [
         {"symbol": "AAPL", "bars": 100, "missing": 0, "first": "2020-01-02", "last": "2020-06-01"}
     ]
     splits = [
         {"name": "Apple 4:1", "status": "PASS", "raw_ratio": 4.0, "adj_ratio": 1.0, "expected": 4.0}
     ]
-    md = build_report(coverage, splits)
+    md = build_report(coverage, splits, missing_symbols=["AABA", "AAMRQ"])
     assert "Data-quality report" in md
     assert "AAPL" in md
     assert "Apple 4:1" in md
+    # Cache-miss constituents are surfaced, not silently dropped.
+    assert "no cached data (2)" in md
+    assert "AABA" in md and "AAMRQ" in md

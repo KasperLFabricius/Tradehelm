@@ -73,8 +73,11 @@ def split_check(
     }
 
 
-def build_report(coverage: list[dict], splits: list[dict]) -> str:
+def build_report(
+    coverage: list[dict], splits: list[dict], missing_symbols: list[str] | None = None
+) -> str:
     """Render a Markdown data-quality report from precomputed rows."""
+    missing_symbols = missing_symbols or []
     lines = ["# Data-quality report", "", "## Coverage (missing sessions)", ""]
     if coverage:
         lines += ["| symbol | bars | missing | first | last |", "|---|---|---|---|---|"]
@@ -85,6 +88,11 @@ def build_report(coverage: list[dict], splits: list[dict]) -> str:
             )
     else:
         lines.append("_no symbols in cache_")
+
+    # Universe members with no cached data at all - exactly the delisted / renamed
+    # / no-data constituents the report is meant to surface (never silently drop).
+    lines += ["", f"## Universe members with no cached data ({len(missing_symbols)})", ""]
+    lines.append(", ".join(missing_symbols) if missing_symbols else "_none_")
 
     lines += ["", "## Split sanity (adjusted close continuity)", ""]
     lines += ["| case | status | raw ratio | adj ratio | expected |", "|---|---|---|---|---|"]

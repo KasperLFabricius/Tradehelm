@@ -41,9 +41,11 @@ def main(argv=None) -> int:
         symbols = symbols[: args.limit]
 
     coverage = []
+    missing_symbols = []
     for symbol in symbols:
         df = cache.read(symbol)
         if df is None:
+            missing_symbols.append(symbol)  # surfaced in the report, not dropped
             continue
         missing = missing_sessions_for(df, calendar)
         coverage.append(
@@ -68,8 +70,11 @@ def main(argv=None) -> int:
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(build_report(coverage, splits), encoding="utf-8")
-    print(f"wrote {out_path} ({len(coverage)} symbols, {len(splits)} split checks)")
+    out_path.write_text(build_report(coverage, splits, missing_symbols), encoding="utf-8")
+    print(
+        f"wrote {out_path} ({len(coverage)} cached, {len(missing_symbols)} missing, "
+        f"{len(splits)} split checks)"
+    )
     return 0
 
 

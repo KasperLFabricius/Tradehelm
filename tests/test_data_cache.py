@@ -152,3 +152,40 @@ def test_get_or_fetch_allows_tail_truncation(tmp_path):
     cache = ParquetCache(tmp_path, calendar=cal)
     out = cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
     assert len(out) == 8
+
+
+def test_covers_snaps_non_session_bounds_to_sessions(tmp_path):
+    # Request starts on a Saturday (2021-01-02); a cache beginning on the first
+    # actual session must count as covered, not trigger a redownload.
+    cal = TradingCalendar()
+    sessions = cal.sessions("2021-01-04", "2021-01-15")
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.write("X", _bars_on(sessions))
+
+    calls = {"n": 0}
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            calls["n"] += 1
+            return _bars_on(sessions)
+
+    cache.get_or_fetch("X", "2021-01-02", "2021-01-16", Src())  # Sat..Sat bounds
+    assert calls["n"] == 0
+
+
+def test_get_or_fetch_incrementally_fetches_only_missing_tail(tmp_path):
+    cal = TradingCalendar()
+    sessions = cal.sessions("2021-01-04", "2021-01-29")
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.write("X", _bars_on(sessions[:8]))  # cached through the 8th session
+
+    seen = {}
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            seen["start"] = pd.Timestamp(start)
+            return _bars_on(cal.sessions(start, end))
+
+    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
+    assert seen["start"] == sessions[8]  # only the missing tail was fetched
+    assert len(out) == len(sessions)

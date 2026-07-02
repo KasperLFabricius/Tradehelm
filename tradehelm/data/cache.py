@@ -59,12 +59,31 @@ class ParquetCache:
         return self.write(symbol, combined)
 
     def _covers(self, df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
-        if len(df) == 0 or df.index.min() > start_ts or df.index.max() < end_ts:
+        if len(df) == 0:
             return False
         if self._calendar is not None:
-            # No interior gaps either: every expected session must be present.
-            return len(self._calendar.missing_sessions(df.index, start_ts, end_ts)) == 0
-        return True
+            # Compare against expected SESSIONS, not raw dates: a request starting
+            # on a non-session (e.g. 2005-01-01, a Saturday) is fully covered by a
+            # cache that starts on the first actual session. Also catches interior
+            # gaps (every session in range must be present).
+            expected = self._calendar.sessions(start_ts, end_ts)
+            if len(expected) == 0:
+                return True
+            return len(self._calendar.missing_sessions(df.index, expected[0], expected[-1])) == 0
+        return df.index.min() <= start_ts and df.index.max() >= end_ts
+
+    def _plan_fetch(
+        self, cached: pd.DataFrame | None, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+    ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+        """Windows to fetch. With a calendar, only the missing sessions (so a
+        daily run extending yesterday's cache fetches just today, not the whole
+        history). Without one, refetch the full range (safe fallback)."""
+        if cached is None or len(cached) == 0 or self._calendar is None:
+            return [(start_ts, end_ts)]
+        missing = self._calendar.sessions(start_ts, end_ts).difference(cached.index)
+        if len(missing) == 0:
+            return [(start_ts, end_ts)]  # safety; normally already "covered"
+        return [(missing.min(), missing.max())]
 
     def _interior_gaps(self, df: pd.DataFrame) -> pd.DatetimeIndex:
         """Missing sessions strictly WITHIN the frame's own span.
@@ -104,7 +123,16 @@ class ParquetCache:
         cached = None if refresh else self.read(symbol)
         if cached is not None and self._covers(cached, start_ts, end_ts):
             return cached.loc[start_ts:end_ts]
-        merged = self.update(symbol, source.daily_bars(symbol, start, end))
+
+        frames = [] if cached is None else [cached]
+        for fetch_start, fetch_end in self._plan_fetch(cached, start_ts, end_ts):
+            frames.append(
+                ensure_bar_frame(source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol)
+            )
+        combined = pd.concat(frames)
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+        merged = self.write(symbol, combined)
+
         gaps = self._interior_gaps(merged)
         if len(gaps):
             raise DataGapError(
