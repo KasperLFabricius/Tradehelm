@@ -7,12 +7,13 @@ dates, newest row wins) so pull_data can extend history cheaply.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 
 from .calendar import TradingCalendar
-from .schema import DataGapError, ensure_bar_frame
+from .schema import DataGapError, EmptyDataError, ensure_bar_frame
 from .sources import BarSource
 
 
@@ -31,6 +32,33 @@ class ParquetCache:
 
     def path_for(self, symbol: str) -> Path:
         return self.cache_dir / f"{_safe_name(symbol)}.parquet"
+
+    def _meta_path(self, symbol: str) -> Path:
+        return self.cache_dir / f"{_safe_name(symbol)}.meta.json"
+
+    def _read_window(self, symbol: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+        """The [start, end] window previously fetched from the source for this
+        symbol (what we KNOW we've asked for), or None."""
+        path = self._meta_path(symbol)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return pd.Timestamp(data["fetched_start"]), pd.Timestamp(data["fetched_end"])
+        except (ValueError, KeyError, OSError):
+            return None
+
+    def _record_window(self, symbol: str, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> None:
+        prev = self._read_window(symbol)
+        lo = min(start_ts, prev[0]) if prev else start_ts
+        hi = max(end_ts, prev[1]) if prev else end_ts
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._meta_path(symbol).write_text(
+            json.dumps(
+                {"fetched_start": lo.date().isoformat(), "fetched_end": hi.date().isoformat()}
+            ),
+            encoding="utf-8",
+        )
 
     def has(self, symbol: str) -> bool:
         return self.path_for(symbol).exists()
@@ -58,14 +86,22 @@ class ParquetCache:
             combined = new
         return self.write(symbol, combined)
 
-    def _covers(self, df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+    def _covers(
+        self, symbol: str, df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+    ) -> bool:
         if len(df) == 0:
             return False
+        # If we've already fetched this whole window, we're covered even when the
+        # symbol's real history is shorter (IPO after start / delisted before end):
+        # on-disk data is guaranteed interior-gap-free (validated before write).
+        window = self._read_window(symbol)
+        if window is not None and window[0] <= start_ts and end_ts <= window[1]:
+            return True
         if self._calendar is not None:
-            # Compare against expected SESSIONS, not raw dates: a request starting
-            # on a non-session (e.g. 2005-01-01, a Saturday) is fully covered by a
-            # cache that starts on the first actual session. Also catches interior
-            # gaps (every session in range must be present).
+            # Fallback for caches without a recorded window (manual / update()):
+            # compare against expected SESSIONS, not raw dates, so a request
+            # starting on a non-session (e.g. 2005-01-01, a Saturday) is covered
+            # by a cache that begins on the first actual session.
             expected = self._calendar.sessions(start_ts, end_ts)
             if len(expected) == 0:
                 return True
@@ -108,35 +144,46 @@ class ParquetCache:
     ) -> pd.DataFrame:
         """Return bars for [start, end], fetching + caching only if not covered.
 
-        Coverage means the cached frame spans [start, end]; if the cache was built
-        with a calendar, it must also contain every trading session in the range
-        (an interior gap forces one refetch). A single fetch is performed - we do
-        not loop if the source itself cannot fill the range.
+        "Covered" means the requested window is within the range we've already
+        fetched for this symbol (recorded per symbol), so a truncated history
+        (IPO / delisting) counts as covered and is not re-fetched every run. When
+        a fetch is needed, only the missing sessions are pulled and merged.
 
-        After a fetch, the merged frame is validated for INTERIOR session gaps and
-        raises DataGapError if any remain (fail loud rather than silently return
-        holey data). Head/tail truncation - IPO, delisting, today's unpublished
-        bar - is NOT treated as a gap.
+        The merged frame is validated for INTERIOR session gaps and raises
+        DataGapError BEFORE writing (a failed check never poisons the cache).
+        Head/tail truncation - IPO, delisting, today's unpublished bar - is NOT a
+        gap; an empty extension of an already-cached symbol is tolerated.
         """
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         cached = None if refresh else self.read(symbol)
-        if cached is not None and self._covers(cached, start_ts, end_ts):
+        if cached is not None and self._covers(symbol, cached, start_ts, end_ts):
             return cached.loc[start_ts:end_ts]
 
         frames = [] if cached is None else [cached]
         for fetch_start, fetch_end in self._plan_fetch(cached, start_ts, end_ts):
-            frames.append(
-                ensure_bar_frame(source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol)
-            )
+            try:
+                frames.append(
+                    ensure_bar_frame(
+                        source.daily_bars(symbol, fetch_start, fetch_end), symbol=symbol
+                    )
+                )
+            except EmptyDataError:
+                # No new data for this window. For a first fetch that's a genuine
+                # failure; for an extension of an already-cached symbol it just
+                # means the (e.g. delisted) tail has no more bars - keep what we have.
+                if cached is None:
+                    raise
+
         combined = pd.concat(frames)
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
-        merged = self.write(symbol, combined)
-
-        gaps = self._interior_gaps(merged)
+        # Validate BEFORE writing so a failed gap check never poisons the cache.
+        gaps = self._interior_gaps(combined)
         if len(gaps):
             raise DataGapError(
                 f"{symbol}: {len(gaps)} interior session gap(s) after fetch "
                 f"(e.g. {gaps[0].date()}); refusing to return holey data"
             )
+        merged = self.write(symbol, combined)
+        self._record_window(symbol, start_ts, end_ts)
         return merged.loc[start_ts:end_ts]

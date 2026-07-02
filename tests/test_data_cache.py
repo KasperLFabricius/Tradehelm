@@ -3,7 +3,13 @@
 import pandas as pd
 import pytest
 
-from tradehelm.data import BAR_COLUMNS, DataGapError, ParquetCache, TradingCalendar
+from tradehelm.data import (
+    BAR_COLUMNS,
+    DataGapError,
+    EmptyDataError,
+    ParquetCache,
+    TradingCalendar,
+)
 
 
 def _frame(dates):
@@ -136,6 +142,45 @@ def test_get_or_fetch_raises_on_persistent_interior_gap(tmp_path):
     cache = ParquetCache(tmp_path, calendar=cal)
     with pytest.raises(DataGapError):
         cache.get_or_fetch("X", "2021-01-04", "2021-01-15", GappySrc())
+    # Gap is validated BEFORE writing, so nothing poisons the cache.
+    assert cache.read("X") is None
+
+
+def test_truncated_history_is_covered_after_first_fetch(tmp_path):
+    # A delisted symbol's short history should be cached and NOT re-fetched every
+    # run (its fetched window is recorded).
+    cal = TradingCalendar()
+    full = cal.sessions("2021-01-04", "2021-01-29")
+    available = full[:8]
+    calls = {"n": 0}
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            calls["n"] += 1
+            return _bars_on(available)
+
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
+    cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())  # second run
+    assert calls["n"] == 1  # covered via recorded window, not re-fetched
+
+
+def test_extension_tolerates_empty_tail_for_cached_symbol(tmp_path):
+    cal = TradingCalendar()
+    full = cal.sessions("2021-01-04", "2021-01-29")
+    available = full[:8]
+
+    class Src:
+        def daily_bars(self, symbol, start, end):
+            if pd.Timestamp(start) <= full[7]:
+                return _bars_on(available)
+            raise EmptyDataError("delisted; no more bars")  # dead tail
+
+    cache = ParquetCache(tmp_path, calendar=cal)
+    cache.get_or_fetch("X", "2021-01-04", "2021-01-13", Src())  # establish cache + window
+    # Extending into the dead tail must not raise; returns the cached history.
+    out = cache.get_or_fetch("X", "2021-01-04", "2021-01-29", Src())
+    assert len(out) == 8
 
 
 def test_get_or_fetch_allows_tail_truncation(tmp_path):
