@@ -100,6 +100,59 @@ def test_precomputed_features_match_prefix_recompute(panel_env, factory):
     assert any_targets, "expected targets on at least one scanned date"
 
 
+def test_full_backtest_identical_with_and_without_precomputed_features():
+    # The definitive F1 guarantee: a whole backtest (entries, holds, stops, custody,
+    # tax) run with the precomputed feature panel must equal the same backtest that
+    # recomputes features on demand - identical equity curve and trades.
+    from tradehelm.backtest.engine import adjusted_ohlc
+    from tradehelm.strategy.features import build_features
+
+    cal = TradingCalendar()
+    sessions = cal.sessions("2018-01-02", "2019-12-31")
+    n = len(sessions)
+    rng = np.random.default_rng(9)
+    raw = {"SPY": None}
+    for sym in ("SPY", *[f"M{i}" for i in range(6)]):
+        start = 100.0 if sym == "SPY" else 40.0 + 8 * int(sym[1:])
+        drift = 5e-4 if sym == "SPY" else 4e-4 + 1e-4 * int(sym[1:])
+        close = pd.Series(start * np.exp(np.cumsum(rng.normal(drift, 0.014, n))), index=sessions)
+        op = close.shift(1).fillna(close.iloc[0])
+        raw[sym] = pd.DataFrame(
+            {
+                "open": op,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "adj_close": close,
+                "volume": [4_000_000] * n,
+            },
+            index=sessions,
+        )
+    members = [f"M{i}" for i in range(6)]
+    costs = CostModel(
+        CostConfig(
+            commission_rate_us=8e-4,
+            min_commission_us=1.0,
+            half_spread_bps=2.0,
+            slippage_bps=1.0,
+            fx_conversion_rate=2.5e-3,
+            custody_fee_annual=0.005,
+        )
+    )
+    eng = BacktestEngine(cal, costs, {y: 6e4 for y in range(2018, 2020)}, min_ticket_dkk=1500.0)
+    args = (raw, lambda _d: members, "2019-01-02", "2019-12-31", 100_000.0, 7.0)
+
+    slow = eng.run(CandidateA(risk=RISK), *args)  # features rebuilt internally on demand
+    adjusted = {s: adjusted_ohlc(df) for s, df in raw.items()}
+    fast = eng.run(
+        CandidateA(risk=RISK), *args, adjusted=adjusted, features=build_features(adjusted)
+    )
+
+    assert len(slow.trades) == len(fast.trades) > 0
+    assert (slow.equity_dkk - fast.equity_dkk).abs().max() < 1e-6
+    assert slow.final_equity_dkk == pytest.approx(fast.final_equity_dkk)
+
+
 def test_resolve_feature_parametric_and_unknown():
     idx = pd.bdate_range("2020-01-01", periods=60)
     frame = _adj(np.linspace(10, 40, 60), idx)
