@@ -233,6 +233,7 @@ def test_build_report_renders_gate_and_stress(study_env, tmp_path):
     assert "Deflated Sharpe" in report
     assert "costs x2" in report  # the stress line is folded in
     assert "Trials executed" in report
+    assert "dividend" in report.lower()  # v1 assumptions restated (Fable review F9)
     # a verdict is stated one way or the other
     assert ("PASS" in report) or ("No candidate passes" in report)
 
@@ -240,6 +241,17 @@ def test_build_report_renders_gate_and_stress(study_env, tmp_path):
 def test_study_result_dataclass_defaults():
     s = CandidateStudy("candidate_a", 1.0, "27/42", [], {}, {}, 0.0, {})
     assert s.n_configs == 0 and list(s.per_period_srs) == []
+
+
+def test_report_marks_stress_line_not_run(study_env, tmp_path):
+    # With no doubled-cost study supplied, the binding stress criterion is absent, so
+    # the candidate must read as incomplete ("n/a"/"needs stress"), not a fail/PASS
+    # (Fable review F6).
+    trials = TrialLog(tmp_path / "trials.csv")
+    base = _run(study_env, trials)  # base only
+    report = build_report([base], trials, generated="2026-07-03")
+    assert "n/a" in report and "needs stress" in report
+    assert "no candidate passes" in report.lower()
 
 
 def test_deflated_sharpe_stats_use_full_ledger(tmp_path):

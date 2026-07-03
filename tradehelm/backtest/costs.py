@@ -29,3 +29,8 @@ class CostModel:
     def fx_fee(self, amount: float) -> float:
         """FX conversion cost on a DKK<->USD funding transfer."""
         return self._c.fx_conversion_rate * abs(amount)
+
+    def custody_daily(self, holdings_value: float, trading_days: int = 252) -> float:
+        """One session's share of the annual custody fee, charged on the market value
+        of holdings (not cash). Zero when custody_fee_annual is 0."""
+        return self._c.custody_fee_annual / trading_days * abs(holdings_value)

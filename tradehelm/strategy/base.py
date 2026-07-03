@@ -15,7 +15,6 @@ import pandas as pd
 
 from ..backtest.engine import StrategyContext
 from ..config.models import RiskConfig
-from . import indicators as ind
 
 
 @dataclass(frozen=True)
@@ -25,6 +24,7 @@ class RiskParams:
     max_positions: int = 10
     per_position_risk_frac: float = 0.01
     max_position_notional_frac: float = 0.20
+    min_ticket_dkk: float = 0.0  # engine skips buys below this DKK notional (F3)
 
     @classmethod
     def from_config(cls, cfg: RiskConfig) -> RiskParams:
@@ -32,6 +32,7 @@ class RiskParams:
             max_positions=cfg.max_positions,
             per_position_risk_frac=cfg.per_position_risk_frac,
             max_position_notional_frac=cfg.max_position_notional_frac,
+            min_ticket_dkk=cfg.min_ticket_dkk,
         )
 
 
@@ -64,29 +65,30 @@ class PositionBook:
             if symbol not in held:
                 del self._lots[symbol]  # exited / stopped out
         for symbol in held:
-            hist = ctx.history(symbol)
-            if hist is None or len(hist) == 0:
+            close = ctx.close(symbol)
+            if close is None:
                 continue
-            close = float(hist["close"].iloc[-1])
             if symbol in self._lots:
                 lot = self._lots[symbol]
                 lot.high_since = max(lot.high_since, close)
             else:
+                entry_open = ctx.value(symbol, "open")
+                atr = ctx.feature(symbol, "atr14")
                 self._lots[symbol] = Lot(
                     entry_date=ctx.date,
-                    entry_price=float(hist["open"].iloc[-1]),
-                    entry_atr=_latest(ind.atr(hist, 14)),
+                    entry_price=entry_open if entry_open is not None else close,
+                    entry_atr=atr if atr is not None else float("nan"),
                     high_since=close,
                 )
 
     def lot(self, symbol: str) -> Lot | None:
         return self._lots.get(symbol)
 
-    def days_held(self, symbol: str, hist: pd.DataFrame) -> int:
+    def days_held(self, symbol: str, ctx: StrategyContext) -> int:
         lot = self._lots.get(symbol)
         if lot is None:
             return 0
-        return int((hist.index > lot.entry_date).sum())
+        return ctx.sessions_since(symbol, lot.entry_date)
 
     def ratchet_stop(self, symbol: str, new_stop: float) -> float:
         """Raise (never lower) the resting stop and return the effective value."""
@@ -103,10 +105,7 @@ class EntrySignal:
     entry_ref: float  # decision close (fill-price proxy for sizing/stop)
     stop: float
     rank_key: float  # sorted ascending; candidates negate for "highest first"
-
-
-def _latest(series: pd.Series) -> float:
-    return float(series.iloc[-1]) if len(series) else float("nan")
+    weight: float | None = None  # explicit weight (Candidate C); None = risk-based sizing
 
 
 def _isnan(x: float) -> bool:
@@ -115,24 +114,22 @@ def _isnan(x: float) -> bool:
 
 def regime_ok(ctx: StrategyContext, symbol: str, sma_window: int) -> bool:
     """True when the regime proxy (e.g. SPY) closes above its SMA(sma_window)."""
-    hist = ctx.history(symbol)
-    if hist is None or len(hist) < sma_window:
-        return False
-    close = hist["close"]
-    ma = _latest(ind.sma(close, sma_window))
-    c = _latest(close)
-    if _isnan(ma) or _isnan(c):
+    c = ctx.close(symbol)
+    ma = ctx.feature(symbol, f"sma{sma_window}")
+    if c is None or ma is None:
         return False
     return c > ma
 
 
-def liquidity_ok(hist: pd.DataFrame, min_price: float, min_dollar_volume: float) -> bool:
+def liquidity_ok(
+    ctx: StrategyContext, symbol: str, min_price: float, min_dollar_volume: float
+) -> bool:
     """Price and 20-day median dollar-volume filter from STRATEGY_SPEC.md."""
-    c = _latest(hist["close"])
-    if _isnan(c) or c <= min_price:
+    c = ctx.close(symbol)
+    if c is None or c <= min_price:
         return False
-    mdv = _latest(ind.median_dollar_volume(hist, 20))
-    return not (_isnan(mdv) or mdv <= min_dollar_volume)
+    mdv = ctx.feature(symbol, "mdv20")
+    return mdv is not None and mdv > min_dollar_volume
 
 
 def risk_weight(entry_ref: float, stop: float, risk_frac: float, max_notional_frac: float) -> float:
@@ -182,8 +179,17 @@ def allocate_new_entries(
     for sig in ranked:
         if slots <= 0:
             break
-        weight = risk_weight(
-            sig.entry_ref, sig.stop, risk.per_position_risk_frac, risk.max_position_notional_frac
+        # Candidate C supplies an explicit equal-ish weight (Fable review F2); A and B
+        # leave it None and size by risk (ATR stop distance).
+        weight = (
+            sig.weight
+            if sig.weight is not None
+            else risk_weight(
+                sig.entry_ref,
+                sig.stop,
+                risk.per_position_risk_frac,
+                risk.max_position_notional_frac,
+            )
         )
         if weight <= 0.0:
             continue

@@ -158,3 +158,31 @@ must surface, not absorb.
 3. Owner: run the study with `--fx-csv` (F5); commit trials.csv + REPORT.md.
 4. Fable + owner: read REPORT.md against the Gate 3G criteria. Holdout stays
    untouched until both explicitly approve.
+
+## Resolution - Phase 3c (PR #17)
+
+All code findings implemented and tested (180 tests, ruff clean):
+
+- **F1 DONE** - `tradehelm/strategy/features.py` precomputes each causal indicator
+  once per symbol; `StrategyContext.feature/value/sessions_since` do O(log n)
+  point reads (cached row position); the study builds the feature panel once and
+  hands it (plus `adjusted`) to every `BacktestEngine.run`. Measured: one
+  backtest-year over 100 symbols went 84 s -> 2.3 s (~36x), precompute ~0.3 s per
+  100 symbols. The full study drops from ~1,200 h (infeasible) to tens of hours
+  (overnight, and subsettable via `--candidates`/`--limit`).
+  `test_precomputed_features_match_prefix_recompute` locks equivalence to the
+  prefix-recompute for all three candidates.
+- **F2 DONE** - STRATEGY_SPEC.md amended; Candidate C sizes
+  `min(1/n_hold, max_position_notional_frac)` via `EntrySignal.weight`.
+- **F3 DONE** - `BacktestEngine(min_ticket_dkk=...)` skips sub-ticket buys; wired
+  from `RiskConfig.min_ticket_dkk` through `RiskParams`.
+- **F4 DONE** - `CostModel.custody_daily`; the engine accrues one session's
+  custody on holdings value each session.
+- **F5 DONE** - `run_research.py` `--fx-csv` is validated (two columns, parseable
+  dates, positive rates) and sorted; the Gate 3G run must pass a real series.
+- **F6 DONE** - the report renders `n/a` / "needs stress" when the doubled-cost
+  line was not run, and does not call it a PASS/fail.
+- **F7 DONE** - Candidate A docstring documents the `max_hold` entry-to-exit span.
+- **F8 DONE** - `_pay_tax` raises when equity cannot cover the tax bill.
+- **F9 DONE** - REPORT.md restates the dividend-as-capital-gains and ticker-format
+  assumptions.

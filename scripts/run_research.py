@@ -66,10 +66,23 @@ def build_panel(cache: ParquetCache, symbols: list[str], benchmark: str) -> dict
 
 
 def _fx(args: argparse.Namespace):
-    if args.fx_csv:
-        df = pd.read_csv(args.fx_csv)
-        return pd.Series(df.iloc[:, 1].values, index=pd.to_datetime(df.iloc[:, 0]))
-    return float(args.fx_rate)
+    """A constant USD/DKK, or a validated daily series from --fx-csv (date, rate).
+
+    The Gate 3G run should use a real series (Fable review F5): FX movement is part of
+    the Danish taxable gain, which a constant erases. The CSV is validated rather than
+    positionally guessed, so a malformed file fails loud instead of skewing tax."""
+    if not args.fx_csv:
+        return float(args.fx_rate)
+    df = pd.read_csv(args.fx_csv)
+    if df.shape[1] < 2:
+        raise SystemExit(f"--fx-csv {args.fx_csv!r} needs at least two columns: date, rate")
+    dates = pd.to_datetime(df.iloc[:, 0], errors="coerce")
+    rates = pd.to_numeric(df.iloc[:, 1], errors="coerce")
+    if dates.isna().any() or rates.isna().any() or (rates <= 0).any():
+        raise SystemExit(
+            f"--fx-csv {args.fx_csv!r}: unparseable dates or non-positive USD/DKK rates"
+        )
+    return pd.Series(rates.to_numpy(), index=dates).sort_index()
 
 
 def main(argv=None) -> int:

@@ -1,12 +1,14 @@
 """The three deterministic v1 strategy candidates (docs/STRATEGY_SPEC.md).
 
-Each is a pure, backtestable rule set: given the point-in-time universe and price
-history up to the decision date, it returns the desired end-state positions. Stops
-are entry-relative and tracked in a PositionBook. No LLM/API judgment (CLAUDE.md
-rule 1); no data beyond the decision date is read.
+Each is a pure, backtestable rule set: given the point-in-time universe and the bars
+and precomputed indicators up to the decision date, it returns the desired end-state
+positions. Every read goes through StrategyContext (bars via `value`/`close`,
+indicators via `feature`) as an O(log n) point lookup, so scanning the universe every
+day stays linear (Fable review F1). Stops are entry-relative and tracked in a
+PositionBook. No LLM/API judgment (CLAUDE.md rule 1); no data beyond the decision date.
 
-Sizing is delegated to the engine via TargetPosition.weight; holds use weight=None
-so a position is not resized by daily price drift. All long-only.
+Sizing is delegated to the engine via TargetPosition.weight; holds use weight=None so
+a position is not resized by daily price drift. All long-only.
 """
 
 from __future__ import annotations
@@ -18,13 +20,11 @@ from typing import ClassVar
 import pandas as pd
 
 from ..backtest.engine import StrategyContext, TargetPosition
-from . import indicators as ind
 from .base import (
     REGIME_SMA,
     EntrySignal,
     _CandidateBase,
     _isnan,
-    _latest,
     allocate_new_entries,
     current_exposure_frac,
     is_week_end_session,
@@ -40,6 +40,10 @@ class CandidateA(_CandidateBase):
     Entry: instrument and SPY above SMA(200), RSI(2) < `rsi_entry`, close < SMA(5).
     Exit: close > SMA(5), or RSI(2) > 70, or `max_hold` sessions elapsed. Protective
     stop: entry - `stop_atr` * ATR(14). Ranked by lowest RSI(2) first.
+
+    Note the time-stop convention: `days_held` counts sessions strictly after the
+    entry-fill session and the exit fills at the next open, so `max_hold = 5` yields a
+    ~6-session entry-to-exit span (Fable review F7).
     """
 
     name: ClassVar[str] = "candidate_a"
@@ -54,16 +58,12 @@ class CandidateA(_CandidateBase):
         keep: set[str] = set()
 
         for symbol in held:
-            hist = ctx.history(symbol)
-            if hist is None or len(hist) < 5:
-                continue  # cannot evaluate the exit -> let it be sold (defensive)
-            close = hist["close"]
-            c = _latest(close)
-            sma5 = _latest(ind.sma(close, 5))
-            r2 = _latest(ind.rsi(close, 2))
-            if _isnan(c) or _isnan(sma5) or _isnan(r2):
+            c = ctx.close(symbol)
+            sma5 = ctx.feature(symbol, "sma5")
+            r2 = ctx.feature(symbol, "rsi2")
+            if c is None or sma5 is None or r2 is None:
                 continue
-            days = self.book.days_held(symbol, hist)
+            days = self.book.days_held(symbol, ctx)
             if c > sma5 or r2 > 70.0 or days >= self.max_hold:
                 continue  # exit signal -> omit, engine sells at next open
             lot = self.book.lot(symbol)
@@ -90,18 +90,14 @@ class CandidateA(_CandidateBase):
         for symbol in ctx.universe():
             if symbol in held:
                 continue
-            hist = ctx.history(symbol)
-            if hist is None or len(hist) < REGIME_SMA:
+            if not liquidity_ok(ctx, symbol, self.min_price, self.min_dollar_volume):
                 continue
-            if not liquidity_ok(hist, self.min_price, self.min_dollar_volume):
-                continue
-            close = hist["close"]
-            c = _latest(close)
-            sma200 = _latest(ind.sma(close, 200))
-            sma5 = _latest(ind.sma(close, 5))
-            r2 = _latest(ind.rsi(close, 2))
-            a14 = _latest(ind.atr(hist, 14))
-            if any(_isnan(x) for x in (c, sma200, sma5, r2, a14)):
+            c = ctx.close(symbol)
+            sma200 = ctx.feature(symbol, "sma200")
+            sma5 = ctx.feature(symbol, "sma5")
+            r2 = ctx.feature(symbol, "rsi2")
+            a14 = ctx.feature(symbol, "atr14")
+            if None in (c, sma200, sma5, r2, a14):
                 continue
             if c <= sma200 or r2 >= self.rsi_entry or c >= sma5:
                 continue
@@ -135,19 +131,15 @@ class CandidateB(_CandidateBase):
         keep: set[str] = set()
 
         for symbol in held:
-            hist = ctx.history(symbol)
-            if hist is None or len(hist) < self.exit_lookback + 1:
-                continue
-            close = hist["close"]
-            c = _latest(close)
-            prior_low = _latest(ind.lowest_close(close, self.exit_lookback).shift(1))
-            a14 = _latest(ind.atr(hist, 14))
-            if _isnan(c) or _isnan(prior_low):
+            c = ctx.close(symbol)
+            prior_low = ctx.feature(symbol, f"lowest_{self.exit_lookback}_prev")
+            a14 = ctx.feature(symbol, "atr14")
+            if c is None or prior_low is None:
                 continue
             if c < prior_low:
                 continue  # channel breakdown -> exit
             lot = self.book.lot(symbol)
-            if lot is not None and not _isnan(a14):
+            if lot is not None and a14 is not None:
                 raw = lot.high_since - self.stop_atr * a14
                 stop = self.book.ratchet_stop(symbol, raw)  # trailing, ratchets up only
             else:
@@ -171,17 +163,13 @@ class CandidateB(_CandidateBase):
         for symbol in ctx.universe():
             if symbol in held:
                 continue
-            hist = ctx.history(symbol)
-            if hist is None or len(hist) < max(self.entry_lookback, 100, 14):
+            if not liquidity_ok(ctx, symbol, self.min_price, self.min_dollar_volume):
                 continue
-            if not liquidity_ok(hist, self.min_price, self.min_dollar_volume):
-                continue
-            close = hist["close"]
-            c = _latest(close)
-            hh = _latest(ind.highest_close(close, self.entry_lookback))
-            a14 = _latest(ind.atr(hist, 14))
-            mom = _latest(ind.trailing_return(close, 100))
-            if any(_isnan(x) for x in (c, hh, a14, mom)):
+            c = ctx.close(symbol)
+            hh = ctx.feature(symbol, f"highest_{self.entry_lookback}")
+            a14 = ctx.feature(symbol, "atr14")
+            mom = ctx.feature(symbol, "ret100")
+            if None in (c, hh, a14, mom):
                 continue
             if c < hh:  # not a new `entry_lookback`-session high (hh includes today)
                 continue
@@ -200,7 +188,9 @@ class CandidateC(_CandidateBase):
     Decides only on the last session of each week. Score = 0.5*r(126) + 0.5*r(252),
     each skipping the most recent 5 sessions. Holds the top `n_hold`; sells a holding
     only when it drops out of the top `n_hold * buffer`. SPY below SMA(200) -> cash.
-    Protective stop: 20% below entry (catastrophe only).
+    Sizing (Fable review F2): each holding gets min(1/n_hold, max_position_notional) of
+    equity - an equal-ish split, NOT risk-based off the catastrophe stop (which would
+    leave it ~75% cash). The 20%-below-entry stop is a catastrophe exit only.
     """
 
     name: ClassVar[str] = "candidate_c"
@@ -245,6 +235,7 @@ class CandidateC(_CandidateBase):
 
         slots = self.n_hold - len(keep)
         if slots > 0:
+            hold_weight = min(1.0 / self.n_hold, self.risk.max_position_notional_frac)
             new_signals: list[EntrySignal] = []
             for symbol in ranked:
                 if len(new_signals) >= slots:
@@ -255,7 +246,9 @@ class CandidateC(_CandidateBase):
                 if c is None or c <= 0:
                     continue
                 stop = c * (1.0 - self.catastrophe_frac)
-                new_signals.append(EntrySignal(symbol, entry_ref=c, stop=stop, rank_key=0.0))
+                new_signals.append(
+                    EntrySignal(symbol, entry_ref=c, stop=stop, rank_key=0.0, weight=hold_weight)
+                )
             exposure = current_exposure_frac(ctx, keep)
             for symbol, weight, stop in allocate_new_entries(
                 new_signals, self.risk, len(keep), exposure
@@ -286,15 +279,11 @@ class CandidateC(_CandidateBase):
     def _scores(self, ctx: StrategyContext) -> list[tuple[str, float]]:
         scored: list[tuple[str, float]] = []
         for symbol in ctx.universe():
-            hist = ctx.history(symbol)
-            if hist is None or len(hist) < 252 + 5:
+            if not liquidity_ok(ctx, symbol, self.min_price, self.min_dollar_volume):
                 continue
-            if not liquidity_ok(hist, self.min_price, self.min_dollar_volume):
-                continue
-            close = hist["close"]
-            r126 = _latest(ind.trailing_return(close, 126, skip=5))
-            r252 = _latest(ind.trailing_return(close, 252, skip=5))
-            if _isnan(r126) or _isnan(r252):
+            r126 = ctx.feature(symbol, "ret126s5")
+            r252 = ctx.feature(symbol, "ret252s5")
+            if r126 is None or r252 is None:
                 continue
             scored.append((symbol, 0.5 * r126 + 0.5 * r252))
         scored.sort(key=lambda x: x[1], reverse=True)  # highest blended momentum first
