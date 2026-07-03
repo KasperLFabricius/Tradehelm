@@ -23,6 +23,9 @@ TODO_VERIFY_KEYS: tuple[str, ...] = (
     "costs.fx_conversion_rate",
     "costs.custody_fee_annual",
     "tax.thresholds.2026",
+    # 2005-2023 aktieindkomst progression thresholds are approximate placeholders
+    # (see config.yaml); confirm each against skat.dk before Gate 7G.
+    *(f"tax.thresholds.{year}" for year in range(2005, 2024)),
 )
 
 # Cost inputs that are modeling ASSUMPTIONS (execution quality), not figures to

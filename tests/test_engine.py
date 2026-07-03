@@ -242,6 +242,36 @@ def test_funding_fx_fee_shows_as_return_drag():
     assert metrics.total_return(res.equity_dkk) == pytest.approx(-0.0025, abs=1e-9)
 
 
+class TargetOutsideUniverse:
+    name = "outside_universe"
+
+    def target_positions(self, ctx):
+        return [TargetPosition("BBB", 1.0)]  # BBB is not in the point-in-time universe
+
+
+def test_targets_outside_universe_are_dropped():
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    panel = {
+        "AAA": _bars(sessions, [100.0] * n, [100.0] * n),
+        "BBB": _bars(
+            sessions, [100.0] * n, [100.0] * n
+        ),  # exists in the panel but not the universe
+    }
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        TargetOutsideUniverse(),
+        panel,
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-08",
+        100_000.0,
+        7.0,
+    )
+    # The universe is only AAA, so a target for BBB is never traded (survivorship safety).
+    assert not any(t.symbol == "BBB" for t in res.trades)
+
+
 class PeekAhead:
     name = "peek"
 

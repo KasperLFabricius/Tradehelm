@@ -261,6 +261,9 @@ def test_negative_tax_threshold_rejected():
 def test_todo_verify_keys_present():
     assert TODO_VERIFY_KEYS
     assert "tax.thresholds.2026" in TODO_VERIFY_KEYS
+    # The approximate historical thresholds are also tracked as unverified.
+    assert "tax.thresholds.2005" in TODO_VERIFY_KEYS
+    assert "tax.thresholds.2023" in TODO_VERIFY_KEYS
 
 
 def test_every_cost_field_is_classified():

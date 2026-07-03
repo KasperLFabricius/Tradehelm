@@ -175,8 +175,15 @@ class BacktestEngine:
         for i in range(len(sessions) - 1):
             decision_day, fill_day = sessions[i], sessions[i + 1]
 
-            ctx = StrategyContext(adjusted, decision_day, list(members_fn(decision_day)), portfolio)
-            targets = {t.symbol: t for t in strategy.target_positions(ctx)}
+            members = list(members_fn(decision_day))
+            ctx = StrategyContext(adjusted, decision_day, members, portfolio)
+            member_set = set(members)
+            # Enforce the point-in-time universe (survivorship safety): only current
+            # members may be targeted. A target outside it is dropped, so a held symbol
+            # that has left the index is exited on the rebalance, never freshly entered.
+            targets = {
+                t.symbol: t for t in strategy.target_positions(ctx) if t.symbol in member_set
+            }
 
             # Settle the ending year BEFORE sizing/filling the new year's orders, so a
             # prior-year tax liability is not left available as cash for them.
