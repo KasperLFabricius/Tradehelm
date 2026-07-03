@@ -58,10 +58,19 @@ Parameter grid: `n_hold` in {3, 5}; `buffer` in {1.5, 2.0}. 4 combinations.
 
 ## Position sizing (all candidates, shared risk layer)
 
-Risk-based: shares = (equity * 1%) / (entry - stop). Capped by max-notional and
-max-positions rules in ARCHITECTURE.md section 5. Fractional shares are not
-assumed; round down; skip if resulting notional < `min_ticket` (config, default
-2,000 DKK equivalent — below this, minimum commission drag exceeds 0.5% per side).
+Candidates A and B (risk-based — their ATR stops are genuine risk anchors):
+shares = (equity * 1%) / (entry - stop). Capped by max-notional and
+max-positions rules in ARCHITECTURE.md section 5.
+
+Candidate C (amended 2026-07-03, Fable review F2): each holding is sized at
+min(1/n_hold, max_position_notional_frac) of equity. The 20% catastrophe stop is
+an exit only and does NOT enter the sizing formula — sizing a rotation strategy
+off a disaster stop would leave it ~75% cash and invalidate it as the
+low-turnover comparator.
+
+All candidates: fractional shares are not assumed; round down; skip if resulting
+notional < `min_ticket` (config, default 2,000 DKK equivalent — below this,
+minimum commission drag exceeds 0.5% per side).
 
 ## Validation protocol (binding)
 
