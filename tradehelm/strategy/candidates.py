@@ -67,7 +67,10 @@ class CandidateA(_CandidateBase):
             if c > sma5 or r2 > 70.0 or days >= self.max_hold:
                 continue  # exit signal -> omit, engine sells at next open
             lot = self.book.lot(symbol)
-            stop = None if lot is None else lot.entry_price - self.stop_atr * lot.entry_atr
+            if lot is None or _isnan(lot.entry_atr):
+                stop = None  # no ATR -> no synthetic stop (never a NaN stop, which never fires)
+            else:
+                stop = lot.entry_price - self.stop_atr * lot.entry_atr
             targets.append(TargetPosition(symbol, weight=None, stop_price=stop, reason="A-hold"))
             keep.add(symbol)
 

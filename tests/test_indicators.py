@@ -32,6 +32,7 @@ def test_rsi_hand_computed_wilder():
 
 def test_rsi_degenerate_all_gains_and_all_losses():
     up = ind.rsi(_series(list(range(1, 20))), 2)
+    assert up.dtype == float  # stays float64 even when all-gains (no object upcast)
     assert up.dropna().iloc[-1] == pytest.approx(100.0)  # never a down day -> 100
     down = ind.rsi(_series(list(range(20, 1, -1))), 2)
     assert down.dropna().iloc[-1] == pytest.approx(0.0)  # never an up day -> 0

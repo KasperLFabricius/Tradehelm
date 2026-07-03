@@ -12,6 +12,7 @@ Insufficient history yields NaN (via ``min_periods``); callers must treat NaN as
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 
@@ -36,12 +37,14 @@ def rsi(close: pd.Series, window: int) -> pd.Series:
     loss = (-delta).clip(lower=0.0)
     avg_gain = gain.ewm(alpha=1.0 / window, adjust=False, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1.0 / window, adjust=False, min_periods=window).mean()
-    rs = avg_gain / avg_loss.replace(0.0, pd.NA)  # avoid a divide-by-zero warning
+    # np.nan (not pd.NA) keeps the result float64; dividing by NaN also silences the
+    # divide-by-zero warning where a window has no losses.
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
     out = 100.0 - 100.0 / (1.0 + rs)
     out = out.where(avg_loss != 0.0, 100.0)  # no losses in the window -> RSI 100
     out = out.where((avg_gain != 0.0) | (avg_loss != 0.0), 50.0)  # perfectly flat -> neutral
     warm = avg_gain.isna() | avg_loss.isna()  # keep NaN over the smoothing warm-up
-    return out.where(~warm)
+    return out.where(~warm).astype(float)
 
 
 def true_range(frame: pd.DataFrame) -> pd.Series:
