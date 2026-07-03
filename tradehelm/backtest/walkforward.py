@@ -34,13 +34,7 @@ def holdout_range(end, holdout_years: int = 2) -> tuple[pd.Timestamp, pd.Timesta
 
 def _purged_start(train_end: pd.Timestamp, purge_sessions: int, calendar) -> pd.Timestamp:
     """Test-window start, leaving purge_sessions TRADING sessions between it and
-    train_end (Lopez de Prado embargo).
-
-    Without a calendar, falls back to calendar days (approximate) - pass a calendar
-    for the exact trading-day purge the validation protocol requires.
-    """
-    if calendar is None:
-        return train_end + pd.Timedelta(days=purge_sessions)
+    train_end (Lopez de Prado embargo)."""
     window_end = train_end + pd.Timedelta(days=purge_sessions * 4 + 30)
     after = calendar.sessions(train_end + pd.Timedelta(days=1), window_end)  # sessions > train_end
     if len(after) <= purge_sessions:  # near the end of data
@@ -59,15 +53,18 @@ def walk_forward_windows(
 ) -> list[Window]:
     """Rolling train/test windows over [start, end - holdout_years].
 
-    The purge between train and test is purge_sessions TRADING days (pass a calendar;
-    without one it approximates with calendar days). The final holdout_years are
-    RESERVED (never appear in a test window) so the Gate 3G holdout stays untouched
-    even when callers pass the full data range as end; holdout_years=0 uses all data.
+    The purge between train and test is purge_sessions TRADING days, so a `calendar` is
+    REQUIRED (calendar days would under-purge near weekends/holidays). The final
+    holdout_years are RESERVED (never appear in a test window) so the Gate 3G holdout
+    stays untouched even when callers pass the full data range as end; holdout_years=0
+    uses all data.
     """
     if train_years <= 0 or test_years <= 0:
         raise ValueError("train_years and test_years must be positive")
     if holdout_years < 0:
         raise ValueError("holdout_years must be non-negative")
+    if calendar is None:
+        raise ValueError("a trading calendar is required for the trading-day purge")
     start = pd.Timestamp(start)
     walk_end = pd.Timestamp(end) - pd.DateOffset(years=holdout_years)
 

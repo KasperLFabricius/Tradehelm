@@ -242,6 +242,30 @@ def test_funding_fx_fee_shows_as_return_drag():
     assert metrics.total_return(res.equity_dkk) == pytest.approx(-0.0025, abs=1e-9)
 
 
+def test_sizing_uses_decision_close_not_fill_open():
+    # Decision at S0 (close 100); S1 opens gapped down to 50. The order quantity must be
+    # sized from the decision close (no lookahead), then filled at the open.
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    opens = [100.0, 50.0] + [50.0] * (n - 2)
+    closes = [100.0] + [50.0] * (n - 1)
+    panel = {"AAA": _bars(sessions, opens, closes)}
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        BuyOnceThenExit("AAA"),
+        panel,
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-08",
+        100_000.0,
+        7.0,
+    )
+    buy = next(t for t in res.trades if t.side == 1)
+    # int(14285.71 / 100) = 142 from the decision close - NOT int(14285.71 / 50) = 285.
+    assert buy.shares == 142
+    assert buy.price_usd == pytest.approx(50.0)  # but filled at the gapped-down open
+
+
 class TargetOutsideUniverse:
     name = "outside_universe"
 

@@ -53,9 +53,13 @@ def test_holdout_is_reserved_by_default():
     assert hold_end == pd.Timestamp("2020-01-01")
 
 
-def test_invalid_years_rejected():
+def test_invalid_args_rejected():
+    cal = TradingCalendar()
     with pytest.raises(ValueError):
-        walk_forward_windows("2010-01-01", "2015-01-01", train_years=0)
+        walk_forward_windows("2010-01-01", "2015-01-01", train_years=0, calendar=cal)
+    # A calendar is required (calendar-day purge would under-purge).
+    with pytest.raises(ValueError):
+        walk_forward_windows("2010-01-01", "2015-01-01", train_years=3, test_years=1)
 
 
 class BuyAndHold:

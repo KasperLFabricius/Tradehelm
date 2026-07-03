@@ -206,7 +206,9 @@ class BacktestEngine:
             active = {sym: t for sym, t in targets.items() if sym not in stopped}
 
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
-            self._rebalance(portfolio, active, adjusted, fill_day, equity_usd, fx, tax, trades)
+            self._rebalance(
+                portfolio, active, adjusted, decision_day, fill_day, equity_usd, fx, tax, trades
+            )
 
             # Intraday touches (open above the stop, low below) fire AFTER the
             # market-on-open orders execute.
@@ -238,17 +240,25 @@ class BacktestEngine:
             return None
         return float(df.loc[day, field_name])
 
-    def _mark_price(self, adjusted, symbol, day) -> float:
-        """Adjusted close as of `day` (last available on or before it), so a held
-        position is valued at its most recent price - never silently at zero when a
-        bar is missing (e.g. a delisting tail). Fails loud if there is no price at all
-        up to `day` (which cannot happen for a symbol we actually bought)."""
+    def _price_asof(self, adjusted, symbol, day) -> float | None:
+        """Adjusted close as of `day` (last available on or before it), or None."""
         df = adjusted.get(symbol)
         if df is not None:
             prior = df["close"].loc[: pd.Timestamp(day)]
             if len(prior):
                 return float(prior.iloc[-1])
-        raise ValueError(f"cannot price held position {symbol!r} as of {pd.Timestamp(day).date()}")
+        return None
+
+    def _mark_price(self, adjusted, symbol, day) -> float:
+        """Like _price_asof but fails loud when there is no price at all up to `day`
+        (impossible for a symbol we actually bought). A held position is thus valued at
+        its most recent price - never silently at zero on a missing bar (delisting tail)."""
+        price = self._price_asof(adjusted, symbol, day)
+        if price is None:
+            raise ValueError(
+                f"cannot price held position {symbol!r} as of {pd.Timestamp(day).date()}"
+            )
+        return price
 
     def _equity_usd(self, portfolio, adjusted, day) -> float:
         total = portfolio.cash_usd
@@ -312,33 +322,39 @@ class BacktestEngine:
                 shares = portfolio.held(symbol)
                 self._sell(portfolio, symbol, shares, exec_price, day, fx, tax, trades, "stop")
 
-    def _rebalance(self, portfolio, targets, adjusted, day, equity_usd, fx, tax, trades) -> None:
+    def _rebalance(
+        self, portfolio, targets, adjusted, decision_day, fill_day, equity_usd, fx, tax, trades
+    ) -> None:
         current = dict(portfolio.shares)
         desired: dict[str, int] = {}
         for symbol, target in targets.items():
-            open_price = self._price(adjusted, symbol, day, "open")
-            if open_price and open_price > 0:
-                desired[symbol] = int((equity_usd * target.weight) / open_price)
+            # Size the order from the DECISION-day price (known before the fill open), so
+            # a gap between decision close and fill open cannot leak into the quantity.
+            size_price = self._price_asof(adjusted, symbol, decision_day)
+            if size_price and size_price > 0:
+                desired[symbol] = int((equity_usd * target.weight) / size_price)
 
-        # Sells first (free up cash), then buys.
+        # Sells first (free up cash), then buys. Fills use the fill-day open.
         for symbol in list(current):
             delta = desired.get(symbol, 0) - current[symbol]
-            open_price = self._price(adjusted, symbol, day, "open")
-            if delta < 0 and open_price is not None:
-                exec_price = self._costs.fill_price(open_price, side=-1)
-                self._sell(portfolio, symbol, -delta, exec_price, day, fx, tax, trades, "rebalance")
+            fill_open = self._price(adjusted, symbol, fill_day, "open")
+            if delta < 0 and fill_open is not None:
+                exec_price = self._costs.fill_price(fill_open, side=-1)
+                self._sell(
+                    portfolio, symbol, -delta, exec_price, fill_day, fx, tax, trades, "rebalance"
+                )
         for symbol, want in desired.items():
-            open_price = self._price(adjusted, symbol, day, "open")
-            if open_price is None:
+            fill_open = self._price(adjusted, symbol, fill_day, "open")
+            if fill_open is None:
                 continue
             delta = want - portfolio.held(symbol)
             if delta > 0:
-                # Cap by what the cash can actually afford at the fill price + commission
-                # (sizing used the raw open), so an all-in target can't overdraw / lever.
-                delta = min(delta, self._max_affordable(portfolio.cash_usd, open_price))
+                # Cap by what the cash can afford at the fill price + commission, so an
+                # all-in target can't overdraw / lever.
+                delta = min(delta, self._max_affordable(portfolio.cash_usd, fill_open))
             if delta > 0:
                 reason = targets[symbol].reason or "rebalance"
-                self._buy(portfolio, symbol, delta, open_price, day, fx, tax, trades, reason)
+                self._buy(portfolio, symbol, delta, fill_open, fill_day, fx, tax, trades, reason)
 
     def _max_affordable(self, cash_usd: float, open_price: float) -> int:
         """Largest whole-share buy whose fill price + commission fits in cash."""
