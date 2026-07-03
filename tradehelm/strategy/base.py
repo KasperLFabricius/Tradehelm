@@ -135,9 +135,7 @@ def liquidity_ok(hist: pd.DataFrame, min_price: float, min_dollar_volume: float)
     return not (_isnan(mdv) or mdv <= min_dollar_volume)
 
 
-def risk_weight(
-    entry_ref: float, stop: float, risk_frac: float, max_notional_frac: float
-) -> float:
+def risk_weight(entry_ref: float, stop: float, risk_frac: float, max_notional_frac: float) -> float:
     """Fraction of equity to allocate so a stop-out loses ~`risk_frac` of equity.
 
     weight = risk_frac * price / (price - stop), capped at `max_notional_frac`. The

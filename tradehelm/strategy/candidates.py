@@ -231,7 +231,9 @@ class CandidateC(_CandidateBase):
             if symbol in buffer_set:  # still strong enough -> hold (reduce churn)
                 targets.append(
                     TargetPosition(
-                        symbol, weight=None, stop_price=self._catastrophe_stop(symbol),
+                        symbol,
+                        weight=None,
+                        stop_price=self._catastrophe_stop(symbol),
                         reason="C-hold",
                     )
                 )
