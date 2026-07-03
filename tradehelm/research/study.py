@@ -98,7 +98,10 @@ def summarize_returns(rets: pd.Series) -> dict:
     cagr = float((1.0 + total) ** (1.0 / years) - 1.0) if years > 0 else 0.0
     std = rets.std(ddof=1)
     sharpe = float(rets.mean() / std * (metrics.TRADING_DAYS**0.5)) if std else 0.0
-    max_dd = float((curve / curve.cummax() - 1.0).min())
+    # Seed the curve with the initial capital level (1.0) so a drawdown from the very
+    # first day is measured against the start, not against the first post-return value.
+    seeded = pd.Series([1.0, *curve.tolist()])
+    max_dd = float((seeded / seeded.cummax() - 1.0).min())
     return {
         "total_return": total,
         "cagr": cagr,

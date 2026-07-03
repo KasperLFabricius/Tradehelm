@@ -174,6 +174,30 @@ def test_summarize_returns_basic():
     assert out["max_drawdown"] <= 0.0
 
 
+def test_summarize_returns_drawdown_counts_initial_capital():
+    # Two down days: the drawdown is measured from the starting 1.0, so it is
+    # 1 - 0.90*0.95 = 14.5%, not just the second day's 5% (Codex PR #14 review).
+    idx = pd.bdate_range("2020-01-01", periods=2)
+    out = summarize_returns(pd.Series([-0.10, -0.05], index=idx))
+    assert out["max_drawdown"] == pytest.approx(0.855 - 1.0)
+
+
+def test_dsr_preserves_first_oos_return():
+    from tradehelm.research.report import _dsr_for
+
+    idx = pd.bdate_range("2019-01-01", periods=200)
+    rng = np.random.default_rng(5)
+    rets = pd.Series(rng.normal(0.0008, 0.01, 200), index=idx)
+    study = CandidateStudy(
+        "candidate_a", 1.0, "27/42", [], {}, {}, 0.0, {}, combined_oos_returns=rets
+    )
+    seeded = pd.Series([1.0, *(1.0 + rets).cumprod().tolist()])  # includes the first return
+    assert len(metrics.daily_returns(seeded)) == 200  # all returns kept, not 199
+    assert _dsr_for(study, 0.03, 40) == pytest.approx(
+        metrics.deflated_sharpe_ratio(seeded, 0.03, 40)
+    )
+
+
 # ------------------------------------------------------------------- study
 
 

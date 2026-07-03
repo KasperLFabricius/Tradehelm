@@ -38,7 +38,10 @@ def _dsr_for(study: CandidateStudy, sr_variance: float, n_trials: int) -> float:
     rets = study.combined_oos_returns
     if rets is None or len(rets) < 3:
         return 0.0
-    equity = (1.0 + rets.sort_index()).cumprod()
+    # Seed with the initial capital (1.0) so deflated_sharpe_ratio's pct_change keeps
+    # the FIRST OOS return instead of dropping it (it would otherwise be lost).
+    curve = (1.0 + rets.sort_index()).cumprod()
+    equity = pd.Series([1.0, *curve.tolist()])
     return metrics.deflated_sharpe_ratio(equity, sr_variance, n_trials)
 
 
