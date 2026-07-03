@@ -18,10 +18,11 @@ import pandas as pd
 
 from ..backtest import metrics
 from ..backtest.costs import CostModel
-from ..backtest.engine import BacktestEngine, BacktestResult
+from ..backtest.engine import BacktestEngine, BacktestResult, adjusted_ohlc
 from ..backtest.walkforward import walk_forward_windows
 from ..config.models import CostConfig
 from ..strategy import BuyAndHold, CandidateA, CandidateB, CandidateC, RiskParams
+from ..strategy.features import build_features
 from .trials import Trial, TrialLog, params_str
 
 # Parameter grids exactly as specified in docs/STRATEGY_SPEC.md.
@@ -177,14 +178,35 @@ def run_candidate_study(
     )
     grid = PARAM_GRIDS[name]
 
+    # Precompute adjusted bars + indicator features ONCE for the whole study; every
+    # backtest below reuses them, so the O(days^2) indicator work is not repeated per
+    # run (Fable review F1). The engine rebuilds nothing when handed these.
+    adjusted = {sym: adjusted_ohlc(df) for sym, df in panel.items()}
+    features = build_features(adjusted)
+
     def bench_members(_day):
         return [benchmark_symbol]  # single-symbol universe so the engine keeps the SPY target
 
     def run(strategy, s, e, members=members_fn) -> BacktestResult:
         engine = BacktestEngine(
-            calendar, cost_model, tax_thresholds, rate_low=rate_low, rate_high=rate_high
+            calendar,
+            cost_model,
+            tax_thresholds,
+            rate_low=rate_low,
+            rate_high=rate_high,
+            min_ticket_dkk=risk.min_ticket_dkk,
         )
-        return engine.run(strategy, panel, members, s, e, initial_dkk, usd_dkk)
+        return engine.run(
+            strategy,
+            panel,
+            members,
+            s,
+            e,
+            initial_dkk,
+            usd_dkk,
+            adjusted=adjusted,
+            features=features,
+        )
 
     per_period_srs: list[float] = []
     grid_test: dict[str, dict] = {params_str(p): {"params": p, "sr": []} for p in grid}

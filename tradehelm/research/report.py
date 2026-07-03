@@ -102,18 +102,26 @@ def build_report(
     lines.append("|---|---|---|---|---|---|---|---|")
     for s in base_studies:
         stress = by_key.get((s.candidate, 2.0, "27/42"))
+        stress_run = stress is not None
         oos_sr = _get(s.combined_oos, "sharpe")
         spy_sr = _get(s.combined_benchmark, "sharpe")
         beats = oos_sr > spy_sr
         windows_ok = s.pct_positive_windows >= POSITIVE_WINDOW_THRESHOLD
-        stress_ok = bool(stress) and _get(stress.combined_oos, "total_return") > 0.0
+        stress_ok = stress_run and _get(stress.combined_oos, "total_return") > 0.0
         dsr = _dsr_for(s, sr_variance, n_trials)
-        prelim = beats and windows_ok and stress_ok
-        verdicts[s.candidate] = prelim
+        if not stress_run:
+            # The doubled-cost stress line is a binding Gate 3G criterion; without it we
+            # do not render a pass/fail, we mark it incomplete (Fable review F6).
+            verdicts[s.candidate] = False
+            stress_cell, prelim_cell = "n/a", "needs stress"
+        else:
+            prelim = beats and windows_ok and stress_ok
+            verdicts[s.candidate] = prelim
+            stress_cell = "yes" if stress_ok else "no"
+            prelim_cell = "PASS" if prelim else "fail"
         lines.append(
             f"| {s.candidate} | {_num(oos_sr)} | {_num(spy_sr)} | {'yes' if beats else 'no'} | "
-            f"{_pct(s.pct_positive_windows)} | {'yes' if stress_ok else 'no'} | "
-            f"{_num(dsr, 3)} | {'PASS' if prelim else 'fail'} |"
+            f"{_pct(s.pct_positive_windows)} | {stress_cell} | {_num(dsr, 3)} | {prelim_cell} |"
         )
     lines.append("")
     passers = [c for c, ok in verdicts.items() if ok]
@@ -143,6 +151,16 @@ def build_report(
         "headline metrics pass)."
     )
     lines.append("- Holdout is one-shot: running it consumes it. It is not run by this report.")
+    lines.append(
+        "- v1 assumption: dividends ride in adjusted prices, so they are taxed as capital "
+        "gains on sale, not as income in the year received (the 15% US withholding-credit "
+        "path is unexercised) - slightly flatters after-tax results for dividend payers."
+    )
+    lines.append(
+        "- Universe tickers with punctuation (e.g. BRK.B) may not match the data source's "
+        "convention; pull_data skips fetch failures, so check the Phase 1 data-quality skip "
+        "counts before trusting the panel breadth."
+    )
     lines.append("")
     return "\n".join(lines)
 

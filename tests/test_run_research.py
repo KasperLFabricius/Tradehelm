@@ -40,3 +40,19 @@ def test_build_panel_requires_benchmark_in_cache():
     cache = _StubCache({"AAA": _bars()})  # no SPY
     with pytest.raises(SystemExit):
         run_research.build_panel(cache, ["AAA"], "SPY")
+
+
+def test_fx_constant_default():
+    assert run_research._fx(run_research._parse_args([])) == pytest.approx(6.9)
+
+
+def test_fx_csv_validated(tmp_path):
+    good = tmp_path / "fx.csv"
+    good.write_text("date,rate\n2020-01-02,6.8\n2020-01-01,6.9\n", encoding="utf-8")
+    series = run_research._fx(run_research._parse_args(["--fx-csv", str(good)]))
+    assert list(series.index) == [pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02")]  # sorted
+    assert list(series.to_numpy()) == [6.9, 6.8]
+    bad = tmp_path / "bad.csv"
+    bad.write_text("date,rate\n2020-01-01,-1\n", encoding="utf-8")  # non-positive rate
+    with pytest.raises(SystemExit):
+        run_research._fx(run_research._parse_args(["--fx-csv", str(bad)]))

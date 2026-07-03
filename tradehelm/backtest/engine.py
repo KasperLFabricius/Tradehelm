@@ -91,9 +91,21 @@ def adjusted_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _scalar(value) -> float | None:
+    return None if pd.isna(value) else float(value)
+
+
 class StrategyContext:
-    """What a strategy sees on decision date T. Enforces no lookahead: history is
-    sliced at T, and any explicit request for a date after T raises LookaheadError."""
+    """What a strategy sees on decision date T. Enforces no lookahead: adjusted bars
+    and indicator features are read AS OF T (the last row on or before it), and any
+    explicit request for a date after T raises LookaheadError.
+
+    Bar/feature lookups are O(log n) (a per-symbol cached row position) so a strategy
+    that scans the universe every day stays linear, not quadratic - see
+    tradehelm/strategy/features.py (Fable review F1). `features` is an optional dict of
+    precomputed indicator frames (same index as the adjusted frame); when absent, a
+    feature is computed on demand from the full frame (equivalent, since indicators are
+    causal), which the direct-construction unit tests rely on."""
 
     def __init__(
         self,
@@ -101,28 +113,78 @@ class StrategyContext:
         date: pd.Timestamp,
         members: list[str],
         portfolio: Portfolio,
+        features: dict[str, pd.DataFrame] | None = None,
     ) -> None:
         self._adjusted = adjusted
         self.date = pd.Timestamp(date)
         self._members = members
         self.portfolio = portfolio
+        self._features = features
+        self._pos: dict[str, int | None] = {}
 
     def universe(self) -> list[str]:
         return list(self._members)
 
+    def _row(self, symbol: str) -> int | None:
+        """Positional index of the last bar on or before the decision date, cached
+        per symbol (adjusted and feature frames share the symbol's index)."""
+        if symbol in self._pos:
+            return self._pos[symbol]
+        df = self._adjusted.get(symbol)
+        pos: int | None = None
+        if df is not None:
+            p = int(df.index.searchsorted(self.date, side="right")) - 1
+            pos = p if p >= 0 else None
+        self._pos[symbol] = pos
+        return pos
+
     def history(self, symbol: str) -> pd.DataFrame | None:
-        """Adjusted OHLC up to and including the decision date (never beyond)."""
+        """Adjusted OHLC up to and including the decision date (never beyond).
+
+        Materializes the prefix - use `value`/`feature` for O(log n) point reads in
+        hot loops; reserve this for the rare case that needs the whole series."""
         df = self._adjusted.get(symbol)
         if df is None:
             return None
         return df.loc[: self.date]
 
+    def value(self, symbol: str, column: str) -> float | None:
+        """An adjusted-bar column (open/high/low/close/volume/dollar_volume) as of T."""
+        pos = self._row(symbol)
+        if pos is None:
+            return None
+        return _scalar(self._adjusted[symbol][column].iat[pos])
+
     def close(self, symbol: str) -> float | None:
         """Latest adjusted close on or before the decision date."""
-        hist = self.history(symbol)
-        if hist is None or len(hist) == 0:
+        return self.value(symbol, "close")
+
+    def feature(self, symbol: str, name: str) -> float | None:
+        """A precomputed indicator (features.py) as of T; NaN warm-up returns None."""
+        pos = self._row(symbol)
+        if pos is None:
             return None
-        return float(hist["close"].iloc[-1])
+        if self._features is not None:
+            fdf = self._features.get(symbol)
+            if fdf is not None and name in fdf.columns:
+                return _scalar(fdf[name].iat[pos])
+        df = self._adjusted.get(symbol)  # not precomputed -> resolve on demand (still causal)
+        if df is None:
+            return None
+        from ..strategy.features import resolve_feature
+
+        return _scalar(resolve_feature(name)(df).iat[pos])
+
+    def sessions_since(self, symbol: str, entry_date) -> int:
+        """Count of the symbol's sessions strictly after `entry_date` up to and
+        including T (the holding length, for a time stop). O(log n)."""
+        df = self._adjusted.get(symbol)
+        if df is None:
+            return 0
+        idx = df.index
+        upto = int(idx.searchsorted(self.date, side="right"))
+        after = int(idx.searchsorted(pd.Timestamp(entry_date), side="right"))
+        return max(0, upto - after)
 
     def close_on(self, symbol: str, date) -> float:
         d = pd.Timestamp(date)
@@ -151,12 +213,14 @@ class BacktestEngine:
         *,
         rate_low: float = 0.27,
         rate_high: float = 0.42,
+        min_ticket_dkk: float = 0.0,
     ) -> None:
         self._calendar = calendar
         self._costs = cost_model
         self._tax_thresholds = tax_thresholds
         self._rate_low = rate_low
         self._rate_high = rate_high
+        self._min_ticket_dkk = min_ticket_dkk  # skip buys below this DKK notional (F3)
 
     def run(
         self,
@@ -167,11 +231,18 @@ class BacktestEngine:
         end,
         initial_dkk: float,
         usd_dkk,
+        *,
+        adjusted: dict[str, pd.DataFrame] | None = None,
+        features: dict[str, pd.DataFrame] | None = None,
     ) -> BacktestResult:
         sessions = self._calendar.sessions(start, end)
         if len(sessions) < 2:
             raise ValueError("backtest needs at least two sessions")
-        adjusted = {sym: adjusted_ohlc(df) for sym, df in panel.items()}
+        # `adjusted`/`features` may be precomputed ONCE by a caller (the research study)
+        # and reused across every backtest, so the O(days^2) indicator work is not
+        # repeated per run (Fable review F1). Otherwise build them here.
+        if adjusted is None:
+            adjusted = {sym: adjusted_ohlc(df) for sym, df in panel.items()}
         fx = _fx_lookup(usd_dkk)
         tax = DanishTaxLedger(self._tax_thresholds, self._rate_low, self._rate_high)
 
@@ -190,7 +261,7 @@ class BacktestEngine:
             decision_day, fill_day = sessions[i], sessions[i + 1]
 
             members = list(members_fn(decision_day))
-            ctx = StrategyContext(adjusted, decision_day, members, portfolio)
+            ctx = StrategyContext(adjusted, decision_day, members, portfolio, features=features)
             member_set = set(members)
             # Enforce the point-in-time universe (survivorship safety): only current
             # members may be targeted. A target outside it is dropped, so a held symbol
@@ -231,6 +302,11 @@ class BacktestEngine:
                 portfolio, current_stops, adjusted, fill_day, fx, tax, trades
             )
 
+            # Accrue one session of custody fee on the market value of holdings (Fable
+            # review F4). Cash-only days accrue nothing.
+            holdings_usd = self._equity_usd(portfolio, adjusted, fill_day) - portfolio.cash_usd
+            portfolio.cash_usd -= self._costs.custody_daily(holdings_usd)
+
             # On the last session of a calendar year, close it and ACCRUE the tax, so the
             # year-end equity point is after-tax (paid the following year).
             if i + 1 == len(sessions) - 1 or sessions[i + 2].year != fill_day.year:
@@ -256,13 +332,18 @@ class BacktestEngine:
         return float(df.loc[day, field_name])
 
     def _price_asof(self, adjusted, symbol, day) -> float | None:
-        """Adjusted close as of `day` (last available on or before it), or None."""
+        """Adjusted close as of `day` (last available on or before it), or None.
+
+        Positional (searchsorted + iat), not a `.loc[:day]` slice, so marking the book
+        every session stays O(log n) rather than O(history) - matters at 20y of bars."""
         df = adjusted.get(symbol)
-        if df is not None:
-            prior = df["close"].loc[: pd.Timestamp(day)]
-            if len(prior):
-                return float(prior.iloc[-1])
-        return None
+        if df is None:
+            return None
+        pos = int(df.index.searchsorted(pd.Timestamp(day), side="right")) - 1
+        if pos < 0:
+            return None
+        value = df["close"].iat[pos]
+        return None if pd.isna(value) else float(value)
 
     def _mark_price(self, adjusted, symbol, day) -> float:
         """Like _price_asof but fails loud when there is no price at all up to `day`
@@ -388,9 +469,21 @@ class BacktestEngine:
                 # Cap by what the cash can afford at the fill price + commission, so an
                 # all-in target can't overdraw / lever.
                 delta = min(delta, self._max_affordable(portfolio.cash_usd, fill_open))
+            if delta > 0 and self._below_min_ticket(delta, fill_open, fx, fill_day):
+                # Below the minimum ticket (Fable review F3): the fixed commission drag
+                # would exceed the intended edge, so skip the buy rather than take a
+                # sub-scale position.
+                continue
             if delta > 0:
                 reason = targets[symbol].reason or "rebalance"
                 self._buy(portfolio, symbol, delta, fill_open, fill_day, fx, tax, trades, reason)
+
+    def _below_min_ticket(self, shares: int, open_price: float, fx, day) -> bool:
+        """True if a `shares` buy at the fill price is worth less than min_ticket_dkk."""
+        if self._min_ticket_dkk <= 0.0:
+            return False
+        notional_dkk = shares * self._costs.fill_price(open_price, side=1) * fx(day)
+        return notional_dkk < self._min_ticket_dkk
 
     def _max_affordable(self, cash_usd: float, open_price: float) -> int:
         """Largest whole-share buy whose fill price + commission fits in cash."""
@@ -432,6 +525,13 @@ class BacktestEngine:
         needed_usd = (tax_dkk + self._costs.fx_fee(tax_dkk)) / fx(day)
         if portfolio.cash_usd < needed_usd:
             self._raise_cash(portfolio, needed_usd, adjusted, day, fx, tax, trades)
+        if portfolio.cash_usd < needed_usd - 1e-6:
+            # Liquidating everything still can't cover the bill: equity < tax owed. Surface
+            # it instead of silently going to negative cash / leverage (Fable review F8).
+            raise ValueError(
+                f"tax bill {tax_dkk:.0f} DKK exceeds liquidatable equity on "
+                f"{pd.Timestamp(day).date()}"
+            )
         portfolio.cash_usd -= needed_usd
 
 
