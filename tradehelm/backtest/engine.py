@@ -167,7 +167,6 @@ class BacktestEngine:
         portfolio = Portfolio(cash_usd=funded_dkk / fx(sessions[0]))
 
         trades: list[Trade] = []
-        resting_stops: dict[str, float] = {}
         # First point is the GROSS committed capital, so the funding FX fee (and any
         # day-0 cost) shows as a return drag rather than being silently rebased away.
         equity: dict[pd.Timestamp, float] = {sessions[0]: float(initial_dkk)}
@@ -186,10 +185,14 @@ class BacktestEngine:
                     decision_day.year, portfolio, tax, fx, fill_day, adjusted, trades
                 )
 
-            # Resting GTC stops that GAP through the open fire at the open, before any
-            # new sizing (live behaviour on a gap-down day).
+            # The stop active on the fill day is the CURRENT decision's stop (placed at
+            # the prior close; the strategy re-decides every session). Gap-through-open
+            # exits fire before the open orders, on positions held into the session.
+            current_stops = {
+                sym: t.stop_price for sym, t in targets.items() if t.stop_price is not None
+            }
             stopped = self._apply_gap_stops(
-                portfolio, resting_stops, adjusted, fill_day, fx, tax, trades
+                portfolio, current_stops, adjusted, fill_day, fx, tax, trades
             )
             # A gap-stopped symbol is NOT re-entered on the same open; re-entry needs a
             # fresh decision on a later session.
@@ -198,16 +201,10 @@ class BacktestEngine:
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
             self._rebalance(portfolio, active, adjusted, fill_day, equity_usd, fx, tax, trades)
 
-            # Stops for the positions actually held now rest for the next session.
-            resting_stops = {
-                sym: targets[sym].stop_price
-                for sym in portfolio.shares
-                if sym in targets and targets[sym].stop_price is not None
-            }
             # Intraday touches (open above the stop, low below) fire AFTER the
             # market-on-open orders execute.
             self._apply_intraday_stops(
-                portfolio, resting_stops, adjusted, fill_day, fx, tax, trades
+                portfolio, current_stops, adjusted, fill_day, fx, tax, trades
             )
 
             equity[fill_day] = self._mark_dkk(portfolio, adjusted, fill_day, fx)

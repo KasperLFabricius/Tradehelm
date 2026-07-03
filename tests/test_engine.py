@@ -320,6 +320,38 @@ def test_gap_through_stop_fires_before_rebalance():
     assert s2_trades[0].price_usd == pytest.approx(85.0)
 
 
+class TightenStop:
+    name = "tighten_stop"
+
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.step = 0
+
+    def target_positions(self, ctx):
+        self.step += 1
+        stop = 80.0 if self.step == 1 else 90.0  # tighten after the first decision
+        return [TargetPosition(self.symbol, 1.0, stop_price=stop)]
+
+
+def test_tightened_stop_applies_on_next_fill():
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    opens = [100.0, 100.0, 85.0] + [85.0] * (n - 3)  # S2 opens at 85
+    panel = {"AAA": _bars(sessions, opens, list(opens))}
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        TightenStop("AAA"), panel, lambda _d: ["AAA"], "2021-01-04", "2021-01-08", 100_000.0, 7.0
+    )
+    # Entry with stop 80; the next decision tightens it to 90; S2 opens at 85, gapping
+    # below the NEW 90 stop, so the position must exit at the gap-open.
+    stop_trades = [
+        t for t in res.trades if t.date == sessions[2] and t.reason in ("stop", "stop-gap")
+    ]
+    assert stop_trades
+    assert stop_trades[0].reason == "stop-gap"
+    assert stop_trades[0].price_usd == pytest.approx(85.0)
+
+
 class ChurnThenHold:
     """Buy, exit (realize a gain), re-buy fully, then hold - to leave a held position
     with low cash going into year-end."""

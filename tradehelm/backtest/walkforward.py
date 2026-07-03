@@ -70,16 +70,27 @@ def walk_forward_windows(
         raise ValueError("holdout_years must be non-negative")
     start = pd.Timestamp(start)
     walk_end = pd.Timestamp(end) - pd.DateOffset(years=holdout_years)
-    windows: list[Window] = []
+
+    # First collect the (train, test_start) schedule.
+    schedule: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
     train_start = start
     while True:
         train_end = train_start + pd.DateOffset(years=train_years)
         test_start = _purged_start(train_end, purge_sessions, calendar)
         if test_start >= walk_end:
             break
-        test_end = min(test_start + pd.DateOffset(years=test_years), walk_end)
-        windows.append(Window(train_start, train_end, test_start, test_end))
+        schedule.append((train_start, train_end, test_start))
         train_start = train_start + pd.DateOffset(years=test_years)
+
+    # test_end is INCLUSIVE for BacktestEngine.run. End each window the day before the
+    # next window starts (and before the holdout at walk_end), capped to test_years, so
+    # windows tile without sharing a boundary session and never touch the holdout.
+    one_day = pd.Timedelta(days=1)
+    windows: list[Window] = []
+    for idx, (tr_start, tr_end, test_start) in enumerate(schedule):
+        next_start = schedule[idx + 1][2] if idx + 1 < len(schedule) else walk_end
+        test_end = min(next_start, walk_end, test_start + pd.DateOffset(years=test_years)) - one_day
+        windows.append(Window(tr_start, tr_end, test_start, test_end))
     return windows
 
 

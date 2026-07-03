@@ -44,7 +44,10 @@ def test_holdout_is_reserved_by_default():
     walk_end = pd.Timestamp("2018-01-01")  # 2020 - 2y
     assert windows
     for w in windows:
-        assert w.test_end <= walk_end
+        assert w.test_end < walk_end  # exclusive: never touches the reserved holdout
+    # adjacent windows must not share a boundary session
+    for a, b in zip(windows, windows[1:], strict=False):
+        assert a.test_end < b.test_start
     hold_start, hold_end = holdout_range("2020-01-01")
     assert hold_start == walk_end
     assert hold_end == pd.Timestamp("2020-01-01")
