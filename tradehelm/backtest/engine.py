@@ -65,7 +65,8 @@ class BacktestResult:
 
 
 def adjusted_ohlc(df: pd.DataFrame) -> pd.DataFrame:
-    """Total-return OHLC: raw open/high/low scaled by the per-day adj_close/close ratio."""
+    """Total-return OHLC (raw open/high/low scaled by the per-day adj_close/close ratio)
+    plus the raw traded volume, which strategies need for a dollar-volume liquidity filter."""
     ratio = df["adj_close"] / df["close"]
     return pd.DataFrame(
         {
@@ -73,6 +74,7 @@ def adjusted_ohlc(df: pd.DataFrame) -> pd.DataFrame:
             "high": df["high"] * ratio,
             "low": df["low"] * ratio,
             "close": df["adj_close"],
+            "volume": df["volume"],
         },
         index=df.index,
     )
@@ -167,6 +169,7 @@ class BacktestEngine:
         portfolio = Portfolio(cash_usd=funded_dkk / fx(sessions[0]))
 
         trades: list[Trade] = []
+        deferred_tax_dkk = 0.0  # tax on closed years, accrued but not yet paid
         # First point is the GROSS committed capital, so the funding FX fee (and any
         # day-0 cost) shows as a return drag rather than being silently rebased away.
         equity: dict[pd.Timestamp, float] = {sessions[0]: float(initial_dkk)}
@@ -185,12 +188,11 @@ class BacktestEngine:
                 t.symbol: t for t in strategy.target_positions(ctx) if t.symbol in member_set
             }
 
-            # Settle the ending year BEFORE sizing/filling the new year's orders, so a
-            # prior-year tax liability is not left available as cash for them.
-            if fill_day.year != decision_day.year:
-                tax_by_year[decision_day.year] = self._settle_year(
-                    decision_day.year, portfolio, tax, fx, fill_day, adjusted, trades
-                )
+            # Pay the prior year's deferred tax on the first fill of the new year (before
+            # sizing new-year orders), raising cash by selling in THIS open year if short.
+            if fill_day.year != decision_day.year and deferred_tax_dkk > 0:
+                self._pay_tax(deferred_tax_dkk, portfolio, fx, fill_day, adjusted, tax, trades)
+                deferred_tax_dkk = 0.0
 
             # The stop active on the fill day is the CURRENT decision's stop (placed at
             # the prior close; the strategy re-decides every session). Gap-through-open
@@ -205,7 +207,9 @@ class BacktestEngine:
             # fresh decision on a later session.
             active = {sym: t for sym, t in targets.items() if sym not in stopped}
 
+            # Size against equity NET of the deferred tax owed (don't deploy money owed).
             equity_usd = self._equity_usd(portfolio, adjusted, decision_day)
+            equity_usd -= deferred_tax_dkk / fx(decision_day)
             self._rebalance(
                 portfolio, active, adjusted, decision_day, fill_day, equity_usd, fx, tax, trades
             )
@@ -216,14 +220,14 @@ class BacktestEngine:
                 portfolio, current_stops, adjusted, fill_day, fx, tax, trades
             )
 
-            equity[fill_day] = self._mark_dkk(portfolio, adjusted, fill_day, fx)
+            # On the last session of a calendar year, close it and ACCRUE the tax, so the
+            # year-end equity point is after-tax (paid the following year).
+            if i + 1 == len(sessions) - 1 or sessions[i + 2].year != fill_day.year:
+                year_tax = tax.close_year(fill_day.year)
+                tax_by_year[fill_day.year] = year_tax
+                deferred_tax_dkk += year_tax
 
-        # Settle the final (partial) year so the reported equity is after-tax.
-        final_year = sessions[-1].year
-        tax_by_year[final_year] = self._settle_year(
-            final_year, portfolio, tax, fx, sessions[-1], adjusted, trades
-        )
-        equity[sessions[-1]] = self._mark_dkk(portfolio, adjusted, sessions[-1], fx)
+            equity[fill_day] = self._mark_dkk(portfolio, adjusted, fill_day, fx) - deferred_tax_dkk
 
         return BacktestResult(
             equity_dkk=pd.Series(equity).sort_index(),
@@ -399,19 +403,14 @@ class BacktestEngine:
             if portfolio.cash_usd >= needed_usd:
                 return
 
-    def _settle_year(self, year, portfolio, tax, fx, day, adjusted, trades) -> float:
-        tax_dkk = tax.close_year(year)  # raises on an unconfigured year (fail loud)
-        if not tax_dkk:
-            return 0.0
-        # Paying tax converts USD->DKK, which also incurs the FX conversion fee.
+    def _pay_tax(self, tax_dkk, portfolio, fx, day, adjusted, tax, trades) -> None:
+        """Pay a deferred tax bill on `day` (a session in the year AFTER the taxed one).
+        Converting USD->DKK also incurs the FX fee; sell to raise cash if short - those
+        sells land in the current (open) year, so they never write into the closed year."""
         needed_usd = (tax_dkk + self._costs.fx_fee(tax_dkk)) / fx(day)
-        # Raise cash only when the sale lands in a still-open year (a mid-backtest
-        # rollover: day.year > the settled year). At final settlement day.year == year,
-        # which is now closed, so accrue the tax against equity instead of selling.
-        if portfolio.cash_usd < needed_usd and day.year != year:
+        if portfolio.cash_usd < needed_usd:
             self._raise_cash(portfolio, needed_usd, adjusted, day, fx, tax, trades)
         portfolio.cash_usd -= needed_usd
-        return tax_dkk
 
 
 def _fx_lookup(usd_dkk):

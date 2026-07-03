@@ -140,9 +140,11 @@ def test_all_in_target_does_not_overdraw_with_costs():
 
 
 def test_tax_payment_charges_fx_conversion_fee():
-    sessions = CAL.sessions("2021-01-04", "2021-01-11")
+    # A 2020 gain is settled at year-end and PAID in 2021 (that's when the FX fee applies).
+    thresholds = {2020: 55_300.0, 2021: 79_400.0}
+    sessions = CAL.sessions("2020-12-24", "2021-01-11")
     n = len(sessions)
-    opens = [100.0, 100.0, 200.0] + [200.0] * (n - 3)  # buy @100 (S1), sell @200 (S2)
+    opens = [100.0, 100.0, 200.0] + [200.0] * (n - 3)  # buy @100 (S1), sell @200 (S2), all 2020
     panel = {"AAA": _bars(sessions, opens, list(opens))}
     costs = CostConfig(
         commission_rate_us=0.0,
@@ -152,21 +154,68 @@ def test_tax_payment_charges_fx_conversion_fee():
         fx_conversion_rate=0.0025,
         custody_fee_annual=0.0,
     )
-    engine = BacktestEngine(CAL, CostModel(costs), THRESHOLDS)
+    engine = BacktestEngine(CAL, CostModel(costs), thresholds)
     res = engine.run(
         BuyOnceThenExit("AAA"),
         panel,
         lambda _d: ["AAA"],
-        "2021-01-04",
+        "2020-12-24",
         "2021-01-11",
         100_000.0,
         7.0,
     )
-    # funded 99,750 DKK -> 14250 USD; buy 142@100, sell 142@200 -> cash 28450 USD; gain 99,400.
-    assert res.tax_by_year[2021] == pytest.approx(29_838.0)
-    # Tax paid as USD->DKK also incurs the 0.25% FX fee: (tax * 1.0025) / 7 USD deducted.
-    expected_dkk = (28_450.0 - (29_838.0 * 1.0025) / 7.0) * 7.0
-    assert res.final_equity_dkk == pytest.approx(expected_dkk, rel=1e-9)
+    # funded 99,750 DKK -> 14250 USD; buy 142@100, sell 142@200 -> cash 28450 USD; 2020 gain 99,400.
+    assert res.tax_by_year[2020] == pytest.approx(33_453.0)  # progressive at the 2020 threshold
+    # Tax paid in 2021 as USD->DKK also incurs the 0.25% FX fee: (tax * 1.0025) / 7 USD.
+    cash_after = 28_450.0 - (33_453.0 * 1.0025) / 7.0
+    assert res.final_equity_dkk == pytest.approx(cash_after * 7.0, rel=1e-9)
+
+
+def test_year_end_tax_accrues_on_dec_31_not_jan():
+    thresholds = {2020: 55_300.0, 2021: 79_400.0}
+    sessions = CAL.sessions("2020-12-24", "2021-01-11")
+    n = len(sessions)
+    opens = [100.0, 100.0, 200.0] + [200.0] * (n - 3)
+    panel = {"AAA": _bars(sessions, opens, list(opens))}
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), thresholds)
+    res = engine.run(
+        BuyOnceThenExit("AAA"),
+        panel,
+        lambda _d: ["AAA"],
+        "2020-12-24",
+        "2021-01-11",
+        100_000.0,
+        7.0,
+    )
+    last_2020 = res.equity_dkk[res.equity_dkk.index.year == 2020].iloc[-1]
+    first_2021 = res.equity_dkk[res.equity_dkk.index.year == 2021].iloc[0]
+    # The after-tax equity already reflects the 2020 tax by Dec 31 (33,453 DKK), and does
+    # not step down into the new year (no fee here) - so calendar-year returns aren't skewed.
+    assert last_2020 == pytest.approx(28_485.714286 * 7 - 33_453.0, rel=1e-6)
+    assert first_2021 == pytest.approx(last_2020, rel=1e-9)
+
+
+class NeedsVolume:
+    name = "needs_volume"
+
+    def __init__(self):
+        self.saw_volume = False
+
+    def target_positions(self, ctx):
+        hist = ctx.history("AAA")
+        if hist is not None and "volume" in hist.columns:
+            self.saw_volume = True
+        return []
+
+
+def test_history_exposes_volume():
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    panel = {"AAA": _bars(sessions, [100.0] * n, [100.0] * n)}
+    strat = NeedsVolume()
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    engine.run(strat, panel, lambda _d: ["AAA"], "2021-01-04", "2021-01-08", 100_000.0, 7.0)
+    assert strat.saw_volume  # strategies can read volume for a liquidity filter
 
 
 def test_year_end_tax_settled_before_new_year():
