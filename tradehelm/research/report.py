@@ -46,6 +46,17 @@ def _index_studies(studies: list[CandidateStudy]) -> dict[tuple[str, float, str]
     return {(s.candidate, s.cost_mult, s.tax_label): s for s in studies}
 
 
+def _ledger_trial_stats(trials: TrialLog) -> tuple[int, float]:
+    """(trial count, variance of per-period Sharpes) over the ENTIRE ledger, so the
+    deflated Sharpe's N and its SR* variance describe the same trial set."""
+    if trials.count() == 0:
+        return 0, 0.0
+    df = trials.read()
+    n = len(df)
+    srs = [float(x) for x in df.get("sharpe_pp", pd.Series(dtype=float)).dropna()]
+    return n, (pvariance(srs) if len(srs) > 1 else 0.0)
+
+
 def build_report(
     studies: list[CandidateStudy],
     trials: TrialLog,
@@ -57,9 +68,11 @@ def build_report(
     by_key = _index_studies(studies)
     base_studies = [s for s in studies if (s.cost_mult, s.tax_label) == BASE]
 
-    n_trials = trials.count()
-    pooled = [sr for s in base_studies for sr in s.per_period_srs]
-    sr_variance = pvariance(pooled) if len(pooled) > 1 else 0.0
+    # The deflated Sharpe must draw its trial COUNT and its Sharpe VARIANCE from the
+    # SAME set - the whole append-only ledger, including stress rows and earlier
+    # reruns the CLI appended - or SR* would mix a full-ledger N with a partial
+    # variance and mis-state significance (Codex PR #14 review).
+    n_trials, sr_variance = _ledger_trial_stats(trials)
 
     lines: list[str] = []
     lines.append("# Tradehelm - Strategy Research Report (v1 candidates)")

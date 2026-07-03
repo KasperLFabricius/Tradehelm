@@ -216,3 +216,37 @@ def test_build_report_renders_gate_and_stress(study_env, tmp_path):
 def test_study_result_dataclass_defaults():
     s = CandidateStudy("candidate_a", 1.0, "27/42", [], {}, {}, 0.0, {})
     assert s.n_configs == 0 and list(s.per_period_srs) == []
+
+
+def test_deflated_sharpe_stats_use_full_ledger(tmp_path):
+    # The DSR trial count AND variance must both come from the whole ledger (incl.
+    # stress/rerun rows), not just the in-memory base studies (Codex PR #14 review).
+    from statistics import pvariance
+
+    from tradehelm.research.report import _ledger_trial_stats
+
+    log = TrialLog(tmp_path / "trials.csv")
+    vals = [0.10, 0.20, -0.05, 0.15, 0.02]
+    for i, v in enumerate(vals):
+        log.append(
+            Trial(
+                "candidate_a",
+                "train",
+                i,
+                "p",
+                1.0,
+                "27/42",
+                "2016-01-01",
+                "2017-01-01",
+                100,
+                0.0,
+                v,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            )
+        )
+    n, var = _ledger_trial_stats(log)
+    assert n == len(vals)
+    assert var == pytest.approx(pvariance(vals))
