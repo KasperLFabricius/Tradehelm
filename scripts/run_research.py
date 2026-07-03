@@ -34,6 +34,9 @@ _CANDIDATE_NAMES = {"a": "candidate_a", "b": "candidate_b", "c": "candidate_c"}
 # A rough USD/DKK used only when no FX series is supplied. A CONSTANT means no FX
 # movement is modelled (so no FX taxable gain); supply --fx-csv for the real series.
 _DEFAULT_FX_RATE = 6.9  # TODO-VERIFY: use a real daily USD/DKK series before Gate 7G.
+# The DKK is euro-pegged, so DKK-per-USD has stayed in a narrow band for decades; a
+# rate outside this is a malformed file (wrong scale/orientation), not a market move.
+_FX_MIN, _FX_MAX = 3.0, 15.0
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -82,7 +85,32 @@ def _fx(args: argparse.Namespace):
         raise SystemExit(
             f"--fx-csv {args.fx_csv!r}: unparseable dates or non-positive USD/DKK rates"
         )
+    # Plausibility band. Reject (do NOT auto-rescale) an out-of-band series - silently
+    # converting a money-consequential input is exactly what we must not do - but name
+    # the two common mistakes so the fix is obvious (Fable point 2).
+    lo, hi, med = float(rates.min()), float(rates.max()), float(rates.median())
+    if lo < _FX_MIN or hi > _FX_MAX:
+        if 300.0 < med < 1500.0:
+            hint = (
+                " - looks like Nationalbanken 'kroner per 100 units'; divide the rate column by 100"
+            )
+        elif 0.05 < med < 0.35:
+            hint = " - looks like USD per DKK; invert to DKK per USD"
+        else:
+            hint = ""
+        raise SystemExit(
+            f"--fx-csv {args.fx_csv!r}: USD/DKK rates outside the plausible "
+            f"{_FX_MIN}-{_FX_MAX} band (min {lo:.3f}, max {hi:.3f}, median {med:.3f}){hint}"
+        )
     return pd.Series(rates.to_numpy(), index=dates).sort_index()
+
+
+def _fx_summary(fx, args: argparse.Namespace) -> str:
+    """One-line human description of the FX input actually in use (echoed to stderr
+    and into the report's data note, so the number is visible when we read Gate 3G)."""
+    if isinstance(fx, pd.Series):
+        return f"series {args.fx_csv} ({fx.min():.3f}-{fx.max():.3f} DKK/USD, {len(fx)} days)"
+    return f"constant {fx:.4g} DKK/USD (no FX movement modelled)"
 
 
 def main(argv=None) -> int:
@@ -103,6 +131,7 @@ def main(argv=None) -> int:
     thresholds = cfg.tax.thresholds
     risk = RiskParams.from_config(cfg.risk)
     fx = _fx(args)
+    print(f"[fx] {_fx_summary(fx, args)}", file=sys.stderr)
 
     out_dir = Path(args.out_dir)
     trials = TrialLog(out_dir / "trials.csv")
@@ -159,7 +188,7 @@ def main(argv=None) -> int:
 
     note = (
         f"Data: local cache, {len(panel)} symbols, {args.start}..{args.end}. "
-        f"FX: {'series ' + args.fx_csv if args.fx_csv else f'constant {args.fx_rate} USD/DKK'}."
+        f"FX: {_fx_summary(fx, args)}."
     )
     report = build_report(studies, trials, data_note=note)
     (out_dir / "REPORT.md").write_text(report, encoding="utf-8")

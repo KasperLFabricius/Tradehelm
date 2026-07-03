@@ -56,3 +56,31 @@ def test_fx_csv_validated(tmp_path):
     bad.write_text("date,rate\n2020-01-01,-1\n", encoding="utf-8")  # non-positive rate
     with pytest.raises(SystemExit):
         run_research._fx(run_research._parse_args(["--fx-csv", str(bad)]))
+
+
+def test_fx_csv_plausibility_band(tmp_path):
+    def args_for(rows):
+        p = tmp_path / "fx.csv"
+        p.write_text("date,rate\n" + "\n".join(rows) + "\n", encoding="utf-8")
+        return run_research._parse_args(["--fx-csv", str(p)])
+
+    # Nationalbanken 'kroner per 100 units' form (~690) -> divide-by-100 hint.
+    with pytest.raises(SystemExit, match="divide"):
+        run_research._fx(args_for(["2020-01-01,690.5", "2020-01-02,689.0"]))
+    # USD per DKK (~0.145) -> invert hint.
+    with pytest.raises(SystemExit, match="invert"):
+        run_research._fx(args_for(["2020-01-01,0.145", "2020-01-02,0.146"]))
+    # Out of band with no obvious scale error -> generic band message, no scale hint.
+    with pytest.raises(SystemExit, match="plausible"):
+        run_research._fx(args_for(["2020-01-01,50.0", "2020-01-02,49.0"]))
+    # In-band passes through.
+    series = run_research._fx(args_for(["2020-01-01,6.8", "2020-01-02,7.1"]))
+    assert list(series.to_numpy()) == [6.8, 7.1]
+
+
+def test_fx_summary_describes_input():
+    const = run_research._fx_summary(6.9, run_research._parse_args([]))
+    assert "constant" in const and "6.9" in const
+    series = pd.Series([6.5, 7.2], index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
+    desc = run_research._fx_summary(series, run_research._parse_args(["--fx-csv", "x.csv"]))
+    assert "6.500" in desc and "7.200" in desc and "2 days" in desc
