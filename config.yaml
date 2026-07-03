@@ -26,7 +26,29 @@ costs:                    # Saxo DK Classic, US stocks. TODO-VERIFY every value.
 tax:                      # Danish aktieindkomst, individual, listed shares (realisation).
   rate_low: 0.27
   rate_high: 0.42
-  thresholds:             # DKK progression point per year (Phase 2 fills back to 2005)
+  thresholds:             # DKK aktieindkomst progression point per year (single person).
+    # TODO-VERIFY: 2005-2023 are APPROXIMATE historical values entered so backtests can
+    # run; confirm each against skat.dk before Gate 7G. The tax ledger fail-louds on any
+    # year with no entry, so a wrong-but-present value can never be silently a zero.
+    2005: 44300
+    2006: 44300
+    2007: 45500
+    2008: 46700
+    2009: 48300
+    2010: 48300
+    2011: 48300
+    2012: 48600
+    2013: 48300
+    2014: 49200
+    2015: 49900
+    2016: 50600
+    2017: 51700
+    2018: 52900
+    2019: 54000
+    2020: 55300
+    2021: 56500
+    2022: 57200
+    2023: 58900
     2024: 61000
     2025: 67500
     2026: 79400           # TODO-VERIFY: sources conflict (67500 vs ~79400 post-reform)
