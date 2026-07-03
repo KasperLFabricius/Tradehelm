@@ -242,6 +242,36 @@ def test_funding_fx_fee_shows_as_return_drag():
     assert metrics.total_return(res.equity_dkk) == pytest.approx(-0.0025, abs=1e-9)
 
 
+def test_entry_below_its_stop_is_skipped():
+    # A target with stop 90 whose entry open is 85 (already breached) is not taken.
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    panel = {"AAA": _bars(sessions, [85.0] * n, [85.0] * n)}  # open 85, always below the 90 stop
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        HoldWithStop("AAA", 90.0),
+        panel,
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-08",
+        100_000.0,
+        7.0,
+    )
+    assert not any(t.side == 1 for t in res.trades)  # never entered below its stop
+
+
+def test_fx_series_with_string_dates():
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    n = len(sessions)
+    panel = {"AAA": _bars(sessions, [100.0] * n, [100.0] * n)}
+    fx = {d.strftime("%Y-%m-%d"): 7.0 for d in sessions}  # string-keyed FX (dict / CSV shape)
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        BuyAndHold("AAA"), panel, lambda _d: ["AAA"], "2021-01-04", "2021-01-08", 100_000.0, fx
+    )
+    assert res.final_equity_dkk == pytest.approx(100_000.0, rel=1e-6)  # flat, no costs, FX resolved
+
+
 def test_sizing_uses_decision_close_not_fill_open():
     # Decision at S0 (close 100); S1 opens gapped down to 50. The order quantity must be
     # sized from the decision close (no lookahead), then filled at the open.

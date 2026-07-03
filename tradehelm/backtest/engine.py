@@ -348,6 +348,11 @@ class BacktestEngine:
             if fill_open is None:
                 continue
             delta = want - portfolio.held(symbol)
+            stop = targets[symbol].stop_price
+            if delta > 0 and stop is not None and fill_open <= stop:
+                # A fresh long whose entry open is already at/below its stop would be
+                # immediately stopped out; don't take the position.
+                continue
             if delta > 0:
                 # Cap by what the cash can afford at the fill price + commission, so an
                 # all-in target can't overdraw / lever.
@@ -405,7 +410,9 @@ def _fx_lookup(usd_dkk):
         return usd_dkk
     if isinstance(usd_dkk, (int, float)):
         return lambda _day: float(usd_dkk)
-    series = pd.Series(usd_dkk).sort_index()
+    series = pd.Series(usd_dkk)
+    series.index = pd.to_datetime(series.index).normalize()  # accept dict / string-dated Series
+    series = series.sort_index()
 
     def _lookup(day):
         d = pd.Timestamp(day)
