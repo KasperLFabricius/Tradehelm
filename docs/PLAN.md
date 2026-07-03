@@ -25,9 +25,9 @@ Owner: Kasper Lindskov Fabricius. Planner/reviewer: Fable. Implementer: Opus.
 | 2a | Cost + Danish tax models | [#11](https://github.com/KasperLFabricius/Tradehelm/pull/11) | Merged |
 | 2b | Backtest engine + metrics + walk-forward | [#12](https://github.com/KasperLFabricius/Tradehelm/pull/12) | Merged |
 | 3a | Strategy candidates A/B/C + indicators + benchmark | [#13](https://github.com/KasperLFabricius/Tradehelm/pull/13) | Merged |
-| 3b | Research study (walk-forward + trials + REPORT.md) | [#14](https://github.com/KasperLFabricius/Tradehelm/pull/14) | in review |
-| 3G | **GATE: go/no-go on strategy results** | — | — |
-| 4 | Saxo SIM broker + live engine + risk layer | — | not started |
+| 3b | Research study harness (walk-forward + trials + REPORT.md) | [#14](https://github.com/KasperLFabricius/Tradehelm/pull/14) | Merged |
+| 3G | **GATE: go/no-go on strategy results** | — | **BLOCKED: awaiting study run on real data** |
+| 4 | Saxo SIM broker + live engine + risk layer | — | not started (gated by 3G) |
 | 5 | API + web UI | — | not started |
 | 6 | Advisor briefings | — | not started |
 | 7 | SIM paper run (>= 4 weeks) + ops runbook | — | not started |
@@ -35,6 +35,16 @@ Owner: Kasper Lindskov Fabricius. Planner/reviewer: Fable. Implementer: Opus.
 | 8 | Live at 10k DKK (plumbing validation) | — | not started |
 
 Update this table as PRs open/merge.
+
+**Current checkpoint (all Phase 0-3 code merged).** Every buildable component up to
+Gate 3G exists and is tested: data layer, cost/tax models, the event-driven backtest
+engine, the three strategy candidates, and the research harness. What remains before
+Gate 3G is *running* the study on the real 2005->now universe to produce
+`research/REPORT.md` (`python -m scripts.pull_data` then `python -m scripts.run_research`).
+That pull cannot run on the current dev box (corporate TLS blocks yfinance), so it is an
+owner/data-machine step. Per Gate 3G this is a hard stop: Phases 4-8 build only
+infrastructure and must not start until a candidate passes the go/no-go, and the
+one-shot holdout is not run until owner + reviewer approve.
 
 ## 3. Phases in detail
 
