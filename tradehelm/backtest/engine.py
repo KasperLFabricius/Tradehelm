@@ -28,10 +28,16 @@ class LookaheadError(Exception):
 
 @dataclass(frozen=True)
 class TargetPosition:
-    """Desired end-state for one symbol. Long-only in v1 (weight in [0, 1])."""
+    """Desired end-state for one symbol. Long-only in v1 (weight in [0, 1]).
+
+    `weight` is a fraction of equity to size to. `weight is None` means HOLD: keep
+    the current share count unchanged (so a multi-day or weekly position is not
+    resized by daily price/equity drift), while still refreshing the resting stop.
+    A symbol simply omitted from the target list is exited.
+    """
 
     symbol: str
-    weight: float
+    weight: float | None
     stop_price: float | None = None
     reason: str = ""
 
@@ -335,8 +341,15 @@ class BacktestEngine:
         self, portfolio, targets, adjusted, decision_day, fill_day, equity_usd, fx, tax, trades
     ) -> None:
         current = dict(portfolio.shares)
-        desired: dict[str, int] = {}
+        desired: dict[str, float] = {}
         for symbol, target in targets.items():
+            if target.weight is None:
+                # HOLD: keep the existing share count (no resize on daily drift). The
+                # resting stop still updates, via current_stops built from the target.
+                held = current.get(symbol)
+                if held is not None and held > 0:
+                    desired[symbol] = held
+                continue
             # Size the order from the DECISION-day price (known before the fill open), so
             # a gap between decision close and fill open cannot leak into the quantity.
             size_price = self._price_asof(adjusted, symbol, decision_day)
