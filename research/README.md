@@ -6,8 +6,23 @@ Generate them from the repo root, after populating the data cache
 (`python -m scripts.pull_data --start 2005-01-01`):
 
 ```
-python -m scripts.run_research --start 2005-01-01
+python -m scripts.run_research --start 2005-01-01 --fx-csv usd_dkk.csv
 ```
+
+## The USD/DKK series (`--fx-csv`)
+
+The Gate 3G run MUST pass a real daily USD/DKK series: FX movement is part of the
+Danish taxable gain, and a constant rate erases it (a constant is only for smoke
+tests). Provenance and the one gotcha:
+
+- Source: Danmarks Nationalbank, StatBank series **DNVALD** (daily exchange rates),
+  the **USD** row. CSV shape: two columns, `date,rate`.
+- Nationalbank quotes **kroner per 100 units** of foreign currency, so the raw USD
+  figure is ~**550-900**. The engine wants **DKK per 1 USD (~5-9)** - so **divide
+  the rate column by 100** before feeding it in.
+- The runner enforces a plausibility band (3-15 DKK/USD) and fails loud, naming the
+  divide-by-100 / invert mistakes, rather than silently rescaling. It also echoes
+  the range actually in use to stderr and into `REPORT.md`'s data note - eyeball it.
 
 - `trials.csv` - the trial registry. EVERY backtest configuration run during
   research (each grid point per train span, each OOS test run, each stress rerun)
