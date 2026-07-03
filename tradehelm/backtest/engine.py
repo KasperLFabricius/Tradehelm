@@ -65,8 +65,12 @@ class BacktestResult:
 
 
 def adjusted_ohlc(df: pd.DataFrame) -> pd.DataFrame:
-    """Total-return OHLC (raw open/high/low scaled by the per-day adj_close/close ratio)
-    plus the raw traded volume, which strategies need for a dollar-volume liquidity filter."""
+    """Total-return OHLC (raw open/high/low scaled by the per-day adj_close/close ratio),
+    plus raw traded volume and a precomputed dollar_volume.
+
+    dollar_volume = raw close * raw volume is adjustment-invariant (the actual traded
+    dollars), so a liquidity filter should use it rather than adjusted_close * volume,
+    which is distorted around splits."""
     ratio = df["adj_close"] / df["close"]
     return pd.DataFrame(
         {
@@ -75,6 +79,7 @@ def adjusted_ohlc(df: pd.DataFrame) -> pd.DataFrame:
             "low": df["low"] * ratio,
             "close": df["adj_close"],
             "volume": df["volume"],
+            "dollar_volume": df["close"] * df["volume"],
         },
         index=df.index,
     )
@@ -385,14 +390,18 @@ class BacktestEngine:
         return shares
 
     def _raise_cash(self, portfolio, needed_usd, adjusted, day, fx, tax, trades) -> None:
-        """Liquidate positions (at the day's open) until cash covers needed_usd, so
-        paying tax can't push the book into leverage. Accounts for sell commission by
-        re-checking after each sale and selling more if still short."""
+        """Liquidate positions until cash covers needed_usd, so paying tax can't push the
+        book into leverage. Fills at the day's open, or - when a symbol has no open bar
+        (a delisting/missing tail) - at its last known price, so any holding can be sold.
+        Accounts for sell commission by re-checking after each sale."""
         for symbol in list(portfolio.shares):
             open_price = self._price(adjusted, symbol, day, "open")
-            if open_price is None or open_price <= 0:
+            if open_price is not None and open_price > 0:
+                exec_price = self._costs.fill_price(open_price, side=-1)
+            else:
+                exec_price = self._price_asof(adjusted, symbol, day)  # delisting-tail liquidation
+            if exec_price is None or exec_price <= 0:
                 continue
-            exec_price = self._costs.fill_price(open_price, side=-1)
             while portfolio.cash_usd < needed_usd and portfolio.held(symbol) > 0:
                 shortfall = needed_usd - portfolio.cash_usd
                 shares = min(portfolio.held(symbol), max(1, int(shortfall / exec_price) + 1))

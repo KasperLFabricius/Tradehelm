@@ -203,7 +203,7 @@ class NeedsVolume:
 
     def target_positions(self, ctx):
         hist = ctx.history("AAA")
-        if hist is not None and "volume" in hist.columns:
+        if hist is not None and {"volume", "dollar_volume"}.issubset(hist.columns):
             self.saw_volume = True
         return []
 
@@ -595,3 +595,27 @@ def test_tax_raise_covers_with_commission():
     # The raise covers the bill despite commissions, so equity never goes negative.
     assert any(t.reason == "tax-raise" for t in res.trades)
     assert res.equity_dkk.min() > 0
+
+
+def test_tax_payment_liquidates_delisted_holding():
+    # A 2020 gain is paid in 2021 even though the holding delisted at year-end (no 2021
+    # bars): _raise_cash liquidates it at the last known price, so no negative equity.
+    thresholds = {2020: 55_300.0, 2021: 79_400.0}
+    sessions = CAL.sessions("2020-12-24", "2021-01-11")
+    s2020 = sessions[sessions.year == 2020]
+    m = len(s2020)
+    opens = [100.0, 100.0, 200.0] + [200.0] * (m - 3)  # buy@100, sell@200, rebuy@200 (hold)
+    aaa = _bars(s2020, opens, list(opens))  # no 2021 bars -> delisted at year-end
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), thresholds)
+    res = engine.run(
+        ChurnThenHold("AAA"),
+        {"AAA": aaa},
+        lambda _d: ["AAA"],
+        "2020-12-24",
+        "2021-01-11",
+        100_000.0,
+        7.0,
+    )
+    assert res.tax_by_year[2020] > 0
+    assert any(t.reason == "tax-raise" for t in res.trades)  # liquidated to pay the tax
+    assert res.equity_dkk.min() > 0  # no leverage / negative equity
