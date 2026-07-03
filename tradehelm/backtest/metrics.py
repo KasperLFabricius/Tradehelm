@@ -1,22 +1,28 @@
 """Backtest performance metrics on an after-tax equity curve (a pandas Series
 indexed by session date).
 
-The probabilistic Sharpe ratio is here; the DEFLATED Sharpe (which discounts for
-the number of strategy trials tried) lands in Phase 3 alongside research/trials.csv,
-since it needs the true trial count.
+The probabilistic Sharpe ratio is here, plus the DEFLATED Sharpe (Phase 3), which
+discounts the observed Sharpe for the number of strategy trials tried - it needs
+the true trial count from research/trials.csv.
 """
 
 from __future__ import annotations
 
 import math
+from statistics import NormalDist
 
 import pandas as pd
 
 TRADING_DAYS = 252
+_EULER_MASCHERONI = 0.5772156649015329
 
 
 def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _norm_ppf(p: float) -> float:
+    return NormalDist().inv_cdf(p)
 
 
 def daily_returns(equity: pd.Series) -> pd.Series:
@@ -64,9 +70,19 @@ def sharpe(
     return float(excess.mean() / std * math.sqrt(periods_per_year))
 
 
+def sharpe_per_period(equity: pd.Series) -> float:
+    """Per-period (non-annualized) Sharpe = mean/std of daily returns. This is the
+    scale the (probabilistic/deflated) Sharpe machinery works in."""
+    rets = daily_returns(equity)
+    if len(rets) < 2 or rets.std(ddof=1) == 0:
+        return 0.0
+    return float(rets.mean() / rets.std(ddof=1))
+
+
 def probabilistic_sharpe_ratio(equity: pd.Series, benchmark_sharpe: float = 0.0) -> float:
     """P(true Sharpe > benchmark), accounting for sample length, skew and kurtosis
-    of the return distribution (Bailey & Lopez de Prado). Per-period, not annualized."""
+    of the return distribution (Bailey & Lopez de Prado). Per-period, not annualized.
+    `benchmark_sharpe` is a per-period Sharpe."""
     rets = daily_returns(equity)
     n = len(rets)
     if n < 3 or rets.std(ddof=1) == 0:
@@ -76,6 +92,30 @@ def probabilistic_sharpe_ratio(equity: pd.Series, benchmark_sharpe: float = 0.0)
     kurt = float(pd.Series(rets).kurt()) + 3.0  # pandas kurt is excess; want full
     denom = math.sqrt(max(1e-12, 1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr**2))
     return float(_norm_cdf((sr - benchmark_sharpe) * math.sqrt(n - 1) / denom))
+
+
+def expected_max_sharpe(sr_variance: float, n_trials: int) -> float:
+    """Expected maximum per-period Sharpe from `n_trials` independent trials whose
+    Sharpes have variance `sr_variance` (Bailey & Lopez de Prado's SR*). This is the
+    Sharpe you'd expect to see by luck alone after trying that many configurations."""
+    if n_trials < 2 or sr_variance <= 0.0:
+        return 0.0
+    e = math.e
+    gamma = _EULER_MASCHERONI
+    return math.sqrt(sr_variance) * (
+        (1.0 - gamma) * _norm_ppf(1.0 - 1.0 / n_trials)
+        + gamma * _norm_ppf(1.0 - 1.0 / (n_trials * e))
+    )
+
+
+def deflated_sharpe_ratio(equity: pd.Series, sr_variance: float, n_trials: int) -> float:
+    """Probabilistic Sharpe against the expected-max Sharpe of `n_trials` trials
+    (variance `sr_variance` of their per-period Sharpes). P(true SR > luck).
+
+    A DSR near 1 means the observed Sharpe survives the multiple-testing discount; near
+    0 means it is indistinguishable from the best of that many random tries."""
+    sr_star = expected_max_sharpe(sr_variance, n_trials)
+    return probabilistic_sharpe_ratio(equity, benchmark_sharpe=sr_star)
 
 
 def summary(equity: pd.Series) -> dict[str, float]:

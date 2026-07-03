@@ -24,8 +24,8 @@ Owner: Kasper Lindskov Fabricius. Planner/reviewer: Fable. Implementer: Opus.
 | 1 | Data layer | [#10](https://github.com/KasperLFabricius/Tradehelm/pull/10) | Merged |
 | 2a | Cost + Danish tax models | [#11](https://github.com/KasperLFabricius/Tradehelm/pull/11) | Merged |
 | 2b | Backtest engine + metrics + walk-forward | [#12](https://github.com/KasperLFabricius/Tradehelm/pull/12) | Merged |
-| 3a | Strategy candidates A/B/C + indicators + benchmark | [#13](https://github.com/KasperLFabricius/Tradehelm/pull/13) | in review |
-| 3b | Research study (walk-forward + trials + REPORT.md) | — | not started |
+| 3a | Strategy candidates A/B/C + indicators + benchmark | [#13](https://github.com/KasperLFabricius/Tradehelm/pull/13) | Merged |
+| 3b | Research study (walk-forward + trials + REPORT.md) | [#14](https://github.com/KasperLFabricius/Tradehelm/pull/14) | in review |
 | 3G | **GATE: go/no-go on strategy results** | — | — |
 | 4 | Saxo SIM broker + live engine + risk layer | — | not started |
 | 5 | API + web UI | — | not started |
