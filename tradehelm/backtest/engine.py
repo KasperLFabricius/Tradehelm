@@ -334,15 +334,24 @@ class BacktestEngine:
             if size_price and size_price > 0:
                 desired[symbol] = int((equity_usd * target.weight) / size_price)
 
-        # Sells first (free up cash), then buys. Fills use the fill-day open.
+        # Sells first (free up cash), then buys. Fills use the fill-day open; if there is
+        # no open bar (a delisting/missing tail), liquidate the exit at the last known
+        # price so the position doesn't dangle valued at that price forever.
         for symbol in list(current):
             delta = desired.get(symbol, 0) - current[symbol]
+            if delta >= 0:
+                continue
             fill_open = self._price(adjusted, symbol, fill_day, "open")
-            if delta < 0 and fill_open is not None:
+            if fill_open is not None:
                 exec_price = self._costs.fill_price(fill_open, side=-1)
-                self._sell(
-                    portfolio, symbol, -delta, exec_price, fill_day, fx, tax, trades, "rebalance"
-                )
+            else:
+                last = self._price_asof(adjusted, symbol, fill_day)
+                if last is None:
+                    continue  # never priced (impossible for a held symbol)
+                exec_price = last
+            self._sell(
+                portfolio, symbol, -delta, exec_price, fill_day, fx, tax, trades, "rebalance"
+            )
         for symbol, want in desired.items():
             fill_open = self._price(adjusted, symbol, fill_day, "open")
             if fill_open is None:

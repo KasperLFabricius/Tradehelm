@@ -211,6 +211,26 @@ def test_held_position_missing_bar_marks_at_last_price():
     assert res.final_equity_dkk == pytest.approx(109_940.0, rel=1e-6)
 
 
+def test_exit_with_no_open_bar_liquidates_at_last_price():
+    # AAA delists after S1 (no bars later). When the strategy exits, the position must be
+    # liquidated at the last known price, not left dangling.
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")
+    aaa = _bars(sessions[:2], [100.0, 100.0], [100.0, 105.0])  # last close 105 on S1
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        BuyOnceThenExit("AAA"),
+        {"AAA": aaa},
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-08",
+        100_000.0,
+        7.0,
+    )
+    sells = [t for t in res.trades if t.side == -1]
+    assert sells  # the exit liquidated the position
+    assert sells[-1].price_usd == pytest.approx(105.0)  # at the last known close
+
+
 class NoTrade:
     name = "no_trade"
 

@@ -53,6 +53,15 @@ def test_holdout_is_reserved_by_default():
     assert hold_end == pd.Timestamp("2020-01-01")
 
 
+def test_holdout_disabled_includes_end():
+    cal = TradingCalendar()
+    windows = walk_forward_windows(
+        "2010-01-01", "2015-01-01", train_years=3, test_years=5, holdout_years=0, calendar=cal
+    )
+    # With no holdout reserved, the last window may reach the requested end (inclusive).
+    assert windows[-1].test_end == pd.Timestamp("2015-01-01")
+
+
 def test_invalid_args_rejected():
     cal = TradingCalendar()
     with pytest.raises(ValueError):
