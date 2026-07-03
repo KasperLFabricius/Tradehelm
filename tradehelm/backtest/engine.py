@@ -234,12 +234,22 @@ class BacktestEngine:
             return None
         return float(df.loc[day, field_name])
 
+    def _mark_price(self, adjusted, symbol, day) -> float:
+        """Adjusted close as of `day` (last available on or before it), so a held
+        position is valued at its most recent price - never silently at zero when a
+        bar is missing (e.g. a delisting tail). Fails loud if there is no price at all
+        up to `day` (which cannot happen for a symbol we actually bought)."""
+        df = adjusted.get(symbol)
+        if df is not None:
+            prior = df["close"].loc[: pd.Timestamp(day)]
+            if len(prior):
+                return float(prior.iloc[-1])
+        raise ValueError(f"cannot price held position {symbol!r} as of {pd.Timestamp(day).date()}")
+
     def _equity_usd(self, portfolio, adjusted, day) -> float:
         total = portfolio.cash_usd
         for symbol, shares in portfolio.shares.items():
-            price = self._price(adjusted, symbol, day, "close")
-            if price is not None:
-                total += shares * price
+            total += shares * self._mark_price(adjusted, symbol, day)
         return total
 
     def _mark_dkk(self, portfolio, adjusted, day, fx) -> float:

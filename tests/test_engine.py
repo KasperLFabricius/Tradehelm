@@ -190,6 +190,27 @@ def test_year_end_tax_settled_before_new_year():
     assert res.tax_by_year[2020] > 0
 
 
+def test_held_position_missing_bar_marks_at_last_price():
+    # AAA has no bar on the final session (a delisting tail). The held position must be
+    # valued at its last close, not silently dropped to zero.
+    sessions = CAL.sessions("2021-01-04", "2021-01-08")  # 5 sessions
+    idx4 = sessions[:4]
+    aaa = _bars(idx4, [100.0] * 4, [100.0, 100.0, 100.0, 110.0])  # last close 110 on S3
+    engine = BacktestEngine(CAL, CostModel(_zero_costs()), THRESHOLDS)
+    res = engine.run(
+        BuyAndHold("AAA"),
+        {"AAA": aaa},
+        lambda _d: ["AAA"],
+        "2021-01-04",
+        "2021-01-08",
+        100_000.0,
+        7.0,
+    )
+    # buy 142 @100 -> cash 85.71; value at last close 110 on the missing day:
+    # (85.71 + 142*110) * 7 = 109,940 DKK (not 600 DKK if the position were zeroed).
+    assert res.final_equity_dkk == pytest.approx(109_940.0, rel=1e-6)
+
+
 class NoTrade:
     name = "no_trade"
 
