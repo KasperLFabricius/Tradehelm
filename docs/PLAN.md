@@ -23,8 +23,9 @@ Owner: Kasper Lindskov Fabricius. Planner/reviewer: Fable. Implementer: Opus.
 | 0 | Scaffolding + CI | [#9](https://github.com/KasperLFabricius/Tradehelm/pull/9) | Merged |
 | 1 | Data layer | [#10](https://github.com/KasperLFabricius/Tradehelm/pull/10) | Merged |
 | 2a | Cost + Danish tax models | [#11](https://github.com/KasperLFabricius/Tradehelm/pull/11) | Merged |
-| 2b | Backtest engine + metrics + walk-forward | [#12](https://github.com/KasperLFabricius/Tradehelm/pull/12) | in review |
-| 3 | Strategies + research study | — | not started |
+| 2b | Backtest engine + metrics + walk-forward | [#12](https://github.com/KasperLFabricius/Tradehelm/pull/12) | Merged |
+| 3a | Strategy candidates A/B/C + indicators + benchmark | — | in review |
+| 3b | Research study (walk-forward + trials + REPORT.md) | — | not started |
 | 3G | **GATE: go/no-go on strategy results** | — | — |
 | 4 | Saxo SIM broker + live engine + risk layer | — | not started |
 | 5 | API + web UI | — | not started |
@@ -74,6 +75,16 @@ deliberately look-ahead-biased strategy fixture is caught by the engine's
 anti-lookahead assertion.
 
 ### Phase 3 — Strategies + research study
+Split into two PRs (as Phase 2 was): **3a** delivers the deterministic alpha logic
+— the indicator library, candidates A/B/C, and the SPY buy-and-hold benchmark, plus
+a `weight=None` HOLD semantic on the engine so multi-day/weekly positions are not
+resized by daily drift — all unit-tested on synthetic panels (no network). **3b**
+delivers the research harness (walk-forward selection, `research/trials.csv`,
+deflated Sharpe over the true trial count, doubled-cost + 27/42 stress lines) and
+`research/REPORT.md`; running it needs the full 2005->now data pull, which the
+corporate-TLS dev box cannot fetch locally, so the study is executed where data is
+available and is what Gate 3G reads.
+
 Scope: implement candidates A, B, C exactly per STRATEGY_SPEC.md; run the full
 validation protocol; write `research/REPORT.md` with results net of everything,
 parameter-plateau plots, and per-window OOS table. Every run logged to
